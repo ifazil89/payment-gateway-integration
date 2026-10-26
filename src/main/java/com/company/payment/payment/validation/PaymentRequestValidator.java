@@ -37,26 +37,26 @@ public class PaymentRequestValidator {
 
     public void validate(PaymentRequest request) {
         List<FieldViolation> violations = new ArrayList<>();
-        CardInfo card = request.getCard();
+        CardInfo card = request.card();
 
-        if (request.getCardType() == CardType.CARD) {
-            if (isBlank(card.getPan())) {
+        if (request.cardType() == CardType.CARD) {
+            if (isBlank(card.pan())) {
                 violations.add(new FieldViolation("card.pan", "is required for cardType CARD"));
             }
-            if (!isBlank(card.getToken())) {
+            if (!isBlank(card.token())) {
                 violations.add(new FieldViolation("card.token", "must be empty for cardType CARD"));
             }
-        } else if (request.getCardType() == CardType.CARD_ON_FILE) {
-            if (isBlank(card.getToken())) {
+        } else if (request.cardType() == CardType.CARD_ON_FILE) {
+            if (isBlank(card.token())) {
                 violations.add(new FieldViolation("card.token", "is required for cardType CARD_ON_FILE"));
             }
-            if (!isBlank(card.getPan())) {
+            if (!isBlank(card.pan())) {
                 violations.add(new FieldViolation("card.pan", "must be empty for cardType CARD_ON_FILE"));
             }
         }
 
         // format YYYY-MM is guaranteed by the schema pattern
-        if (card.getExpiry() != null && YearMonth.parse(card.getExpiry()).isBefore(YearMonth.now(clock))) {
+        if (card.expiry() != null && YearMonth.parse(card.expiry()).isBefore(YearMonth.now(clock))) {
             violations.add(new FieldViolation("card.expiry", "card has expired"));
         }
 

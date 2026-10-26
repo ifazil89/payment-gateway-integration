@@ -28,16 +28,17 @@ class PaymentMappersTest {
     private final PaymentNiMapper niMapper = Mappers.getMapper(PaymentNiMapper.class);
 
     private static PaymentRequest request(String amount, String currency) {
-        return new PaymentRequest()
+        return PaymentRequest.builder()
                 .merchantOrderId("SO-1")
                 .cardType(CardType.CARD)
-                .card(new CardInfo().pan("4111111111111111").expiry("2030-12").cvv("123").cardholderName("Jane Doe"))
-                .amount(new Amount().value(new BigDecimal(amount)).currency(currency))
-                .billingInfo(new BillingInfo().firstName("Jane").lastName("Doe").email("jane@example.com")
-                        .address("Street 1").city("Dubai").countryCode("AE"))
-                .deviceInfo(new DeviceInfo().ip("203.0.113.10").userAgent("UA").acceptHeader("text/html")
+                .card(new CardInfo("4111111111111111", null, "2030-12", "123", "Jane Doe"))
+                .amount(new Amount(new BigDecimal(amount), currency))
+                .billingInfo(BillingInfo.builder().firstName("Jane").lastName("Doe").email("jane@example.com")
+                        .address("Street 1").city("Dubai").countryCode("AE").build())
+                .deviceInfo(DeviceInfo.builder().ip("203.0.113.10").userAgent("UA").acceptHeader("text/html")
                         .language("en").timeZoneOffset("-240").screenWidth("1440").screenHeight("900")
-                        .colorDepth("24").javascriptEnabled(true).javaEnabled(false));
+                        .colorDepth("24").javascriptEnabled(true).javaEnabled(false).build())
+                .build();
     }
 
     @Test
@@ -54,7 +55,7 @@ class PaymentMappersTest {
 
     @Test
     void browserInfoUsesFullScreenChallengeByDefault() {
-        NiBrowserInfo browser = niMapper.toBrowserInfo(request("1", "AED").getDeviceInfo());
+        NiBrowserInfo browser = niMapper.toBrowserInfo(request("1", "AED").deviceInfo());
 
         assertThat(browser.challengeWindowSize()).isEqualTo("05");
         assertThat(browser.browserTz()).isEqualTo("-240");
@@ -78,10 +79,10 @@ class PaymentMappersTest {
 
         var response = paymentMapper.toResponse(payment);
 
-        assertThat(response.getAmount().getValue()).isEqualByComparingTo("250.00");
-        assertThat(response.getAmount().getValue().scale()).isEqualTo(2);
-        assertThat(response.getStatus()).isEqualTo(PaymentStatus.PENDING);
-        assertThat(response.getCreatedAt().getOffset().getTotalSeconds()).isZero();
+        assertThat(response.amount().value()).isEqualByComparingTo("250.00");
+        assertThat(response.amount().value().scale()).isEqualTo(2);
+        assertThat(response.status()).isEqualTo(PaymentStatus.PENDING);
+        assertThat(response.createdAt().getOffset().getTotalSeconds()).isZero();
     }
 
     @Test

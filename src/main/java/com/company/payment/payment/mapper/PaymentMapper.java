@@ -66,9 +66,8 @@ public interface PaymentMapper {
 
     /** Always with the currency's scale: 250 / 250.000 (from the DB) -> 250.00 for AED. */
     default Amount toAmount(Payment payment) {
-        return new Amount()
-                .value(Amounts.normalize(payment.getAmount().stripTrailingZeros(), payment.getCurrency()))
-                .currency(payment.getCurrency());
+        return new Amount(Amounts.normalize(payment.getAmount().stripTrailingZeros(), payment.getCurrency()),
+                payment.getCurrency());
     }
 
     /** Entity times are Instants (UTC); the API uses date-time (OffsetDateTime). */

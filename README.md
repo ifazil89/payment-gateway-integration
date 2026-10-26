@@ -64,7 +64,7 @@ src/main/java/com.company.payment
 ├── payment/                             FEATURE: authorise a payment
 │   ├── api/PaymentsApi                  interface: POST /api/v1/payments, headers, @Valid
 │   ├── model/                           PaymentRequest, CardInfo, CardType, Amount, BillingInfo, DeviceInfo,
-│   │                                    PaymentResponse, PaymentStatus (request/response JSON, Bean Validation)
+│   │                                    PaymentResponse, PaymentStatus (records: JSON + Bean Validation)
 │   ├── controller/PaymentController     implements PaymentsApi (one line)
 │   ├── service/PaymentService           the flow, step by step
 │   ├── validation/PaymentRequestValidator   cardType vs pan/token, expiry
@@ -175,40 +175,24 @@ Every non-200 response has the same body: **`ErrorResponse`**, plus **`ErrorDeta
 ```java
 package com.company.payment.common.model;
 
-public class ErrorResponse {
-  private String code;                                  // required
-  private String message;                               // required
-  private String correlationId;
-  private String traceId;
-  private OffsetDateTime timestamp;                     // required
-  private List<@Valid ErrorDetail> errors = new ArrayList<>();
+@Builder
+public record ErrorResponse(String code, String message, String correlationId, String traceId,
+                            OffsetDateTime timestamp, List<ErrorDetail> errors) { }
 
-  public ErrorResponse() { }
-  public ErrorResponse(String code, String message, OffsetDateTime timestamp) { ... }
-
-  public ErrorResponse code(String code) { this.code = code; return this; }   // fluent setters
-  public String getCode() { ... }  public void setCode(String code) { ... }  // + getters/setters
-  ...                                                   // same for every field, plus addErrorsItem(ErrorDetail)
-}
-
-public class ErrorDetail {
-  private String field;                                 // required
-  private String message;                               // required
-  public ErrorDetail field(String field) { ... }  public ErrorDetail message(String message) { ... }
-  ...
-}
+public record ErrorDetail(String field, String message) { }
 ```
 
 They are built in exactly one place, `common/exception/GlobalExceptionHandler.build(...)`:
 
 ```java
-new ErrorResponse()
+ErrorResponse.builder()
         .code(code)
         .message(message)
         .correlationId(MDC.get(LogFields.CORRELATION_ID))
         .traceId(MDC.get(LogFields.TRACE_ID))
         .timestamp(OffsetDateTime.now(ZoneOffset.UTC))
-        .errors(errors);                                // List<ErrorDetail>: new ErrorDetail().field(f).message(m)
+        .errors(errors)                                 // List<ErrorDetail>: new ErrorDetail(field, message)
+        .build();
 ```
 
 The field errors come from three sources, all turned into `ErrorDetail`:

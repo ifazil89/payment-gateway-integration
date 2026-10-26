@@ -68,7 +68,7 @@ public class PaymentService {
         // 1. Validate
         checkIdempotencyKey(idempotencyKey);
         validator.validate(request);                                                          // 400
-        BigDecimal amount = Amounts.normalize(request.getAmount().getValue(), request.getAmount().getCurrency()); // 422
+        BigDecimal amount = Amounts.normalize(request.amount().value(), request.amount().currency()); // 422
         String requestHash = requestHash(request);
 
         // 2. Idempotency
@@ -86,9 +86,9 @@ public class PaymentService {
         try (MDC.MDCCloseable ignored = MDC.putCloseable(LogFields.PAYMENT_ID, payment.getId())) {
             log.atInfo()
                     .setMessage("Payment created: {} {} {} for order {}")
-                    .addArgument(request.getCardType()).addArgument(payment.getCurrency())
+                    .addArgument(request.cardType()).addArgument(payment.getCurrency())
                     .addArgument(payment.getAmount()).addArgument(payment.getMerchantOrderId())
-                    .addKeyValue("payment.card_type", request.getCardType().getValue())
+                    .addKeyValue("payment.card_type", request.cardType().getValue())
                     .addKeyValue("payment.amount", payment.getAmount().toPlainString())
                     .addKeyValue("payment.currency", payment.getCurrency())
                     .addKeyValue("payment.merchant_order_id", payment.getMerchantOrderId())
@@ -102,10 +102,10 @@ public class PaymentService {
                 payment = repository.save(payment);
 
                 // 5. Card or saved card token
-                NiPaymentResponse afterCard = request.getCardType() == CardType.CARD
-                        ? niClient.payWithCard(link(niPayment, NiLinks.CARD), niMapper.toCardRequest(request.getCard()))
+                NiPaymentResponse afterCard = request.cardType() == CardType.CARD
+                        ? niClient.payWithCard(link(niPayment, NiLinks.CARD), niMapper.toCardRequest(request.card()))
                         : niClient.payWithToken(link(niPayment, NiLinks.SAVED_CARD),
-                                niMapper.toTokenCardRequest(request.getCard()));
+                                niMapper.toTokenCardRequest(request.card()));
                 payment.niAnswered(afterCard.state());
                 payment = repository.save(payment);
 
@@ -148,7 +148,7 @@ public class PaymentService {
         String notificationUrl = niProperties.threedsNotificationUrl(payment.getId());
         NiPaymentResponse result = niClient.authenticateThreeDs(
                 link(afterCard, NiLinks.THREEDS_AUTHENTICATION),
-                niMapper.toThreeDsRequest(request.getDeviceInfo(), notificationUrl));
+                niMapper.toThreeDsRequest(request.deviceInfo(), notificationUrl));
 
         NiThreeDs threeDs = result.threeDs();
         String transStatus = threeDs == null ? null : threeDs.transStatus();
@@ -200,12 +200,12 @@ public class PaymentService {
 
     /** Fingerprint of what matters in the request (no card number or CVV in it). */
     private static String requestHash(PaymentRequest r) {
-        String card = r.getCardType() == CardType.CARD
-                ? last4(r.getCard().getPan())
-                : sha256(r.getCard().getToken() == null ? "" : r.getCard().getToken());
-        String value = String.join("|", r.getMerchantOrderId(), r.getCardType().getValue(),
-                r.getAmount().getValue().stripTrailingZeros().toPlainString(), r.getAmount().getCurrency(),
-                r.getBillingInfo().getEmail(), card);
+        String card = r.cardType() == CardType.CARD
+                ? last4(r.card().pan())
+                : sha256(r.card().token() == null ? "" : r.card().token());
+        String value = String.join("|", r.merchantOrderId(), r.cardType().getValue(),
+                r.amount().value().stripTrailingZeros().toPlainString(), r.amount().currency(),
+                r.billingInfo().email(), card);
         return sha256(value);
     }
 

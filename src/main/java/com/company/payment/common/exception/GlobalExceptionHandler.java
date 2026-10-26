@@ -128,21 +128,22 @@ public class GlobalExceptionHandler {
         if (status.is4xxClientError()) {
             log.atWarn().setMessage("Request rejected: {} {}").addArgument(code).addArgument(message)
                     .addKeyValue("error.code", code)
-                    .addKeyValue("error.fields", errors == null ? List.of() : errors.stream().map(ErrorDetail::getField).toList())
+                    .addKeyValue("error.fields", errors == null ? List.of() : errors.stream().map(ErrorDetail::field).toList())
                     .log();
         }
-        ErrorResponse body = new ErrorResponse()
+        ErrorResponse body = ErrorResponse.builder()
                 .code(code)
                 .message(message)
                 .correlationId(MDC.get(LogFields.CORRELATION_ID))
                 .traceId(MDC.get(LogFields.TRACE_ID))
                 .timestamp(OffsetDateTime.now(ZoneOffset.UTC))
-                .errors(errors == null || errors.isEmpty() ? null : errors);
+                .errors(errors == null || errors.isEmpty() ? null : errors)
+                .build();
         return ResponseEntity.status(status).body(body);
     }
 
     private static ErrorDetail detail(String field, String message) {
-        return new ErrorDetail().field(field).message(message);
+        return new ErrorDetail(field, message);
     }
 
     /** "createPayment.idempotencyKey" -> "idempotencyKey" */

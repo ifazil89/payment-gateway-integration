@@ -25,7 +25,6 @@ Swagger UI: `http://localhost:8085/swagger-ui.html` (API key `sandbox-key`). Exa
 - All API code is hand-written in `src/`; nothing is generated from OpenAPI. `src/main/resources/static/openapi/payment-api.yaml` is documentation only, served as-is by Swagger UI (`springdoc.swagger-ui.url`).
 - Per feature: `api/` holds the endpoint interface (`payment/api/PaymentsApi`: path, headers, `@Validated`/`@Valid`), `model/` the request/response classes with Jackson + Bean Validation annotations (`payment/model`). The shared error body is `common/model/ErrorResponse` + `ErrorDetail`.
 - Nothing checks the YAML against the code. Any change to a path, header, field or validation rule must be mirrored in `payment-api.yaml` in the same change, or Swagger UI documents the wrong API.
-- `CardInfo.toString()` masks `pan`, `token` and `cvv` (`CardInfoTest`); keep that for any model carrying card data.
 
 ### Layout: feature first, then layers
 - `payment/` — the feature: `PaymentController` (implements `payment/api/PaymentsApi`) → `PaymentService` → `NiClient` + `PaymentRepository`. Also `PaymentRequestValidator` (cardType vs pan/token, expiry), entity `Payment`/`PaymentState`, and two MapStruct mappers: `PaymentMapper` (API model ↔ entity) and `PaymentNiMapper` (API model → N-Genius DTOs).
@@ -43,7 +42,8 @@ Validate → idempotency lookup by (clientId, Idempotency-Key) with a request ha
 ### Lombok conventions (hand-written classes only)
 - `@Slf4j` for loggers; `@RequiredArgsConstructor` for constructor injection (write the constructor by hand only when it does more than assign fields, e.g. `NiClient`, `PaymentRequestValidator`).
 - Entity `Payment`: `@Getter` + `@NoArgsConstructor`, and `@Setter` only on the fields `PaymentMapper` copies from the request; state changes go through its domain methods (`start`, `niAnswered`, `fail`, ...). No `@Data` on entities.
-- N-Genius DTOs and `@ConfigurationProperties` are Java records: no Lombok there. The API models in `*/model` are plain classes in the openapi-generator style they were created from (fluent setters, getters/setters, equals/hashCode); keep new models consistent with them.
+- API models (`*/model`), N-Genius DTOs and `@ConfigurationProperties` are Java records. Bean Validation annotations go on the record components; Jackson binds through the canonical constructor. Records with many components get Lombok `@Builder` (MapStruct then builds them through the builder).
+- Exception: no `@Builder` on a record holding card data (`CardInfo`): Lombok's builder `toString()` would print the PAN/CVV. Such a record overrides `toString()` to mask them (`CardInfoTest`).
 - In `pom.xml`, Lombok is listed before MapStruct in `annotationProcessorPaths`, with `lombok-mapstruct-binding`, so MapStruct sees Lombok's accessors. Keep that order.
 
 ### Mapping and persistence

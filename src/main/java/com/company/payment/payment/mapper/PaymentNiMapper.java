@@ -32,7 +32,7 @@ public interface PaymentNiMapper {
 
     /** Major units -> minor units: AED 250.00 -> 25000. */
     default NiAmount toNiAmount(Amount amount) {
-        return new NiAmount(amount.getCurrency(), Amounts.toMinorUnits(amount.getValue(), amount.getCurrency()));
+        return new NiAmount(amount.currency(), Amounts.toMinorUnits(amount.value(), amount.currency()));
     }
 
     /** CARD: pan, expiry, cvv, cardholderName. */
