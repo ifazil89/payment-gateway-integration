@@ -1,0 +1,85 @@
+spring:
+  application:
+    name: ni-payment-integration
+  profiles:
+    default: sandbox
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate          # the schema is owned by Flyway (db/migration)
+  jackson:
+    default-property-inclusion: non_null
+
+server:
+  port: 8085
+
+# ---------------------------------------------------------------------------
+# N-Genius
+# ---------------------------------------------------------------------------
+ni:
+  base-url: ${NI_BASE_URL}
+  api-key: ${NI_API_KEY}                  # service account API key, sent as "Basic <key>"
+  outlet-id: ${NI_OUTLET_ID}
+  realm-name: ${NI_REALM_NAME:}           # only if N-Genius asks for it on your tenant
+  connect-timeout: 5s
+  response-timeout: 30s
+  max-connections: 50
+  # The bank posts the 3DS challenge result here (through the shopper's browser).
+  # {paymentId} is replaced. The endpoint itself is built with the 3DS API.
+  threeds-notification-url: ${NI_THREEDS_NOTIFICATION_URL}
+
+# ---------------------------------------------------------------------------
+# This service
+# ---------------------------------------------------------------------------
+app:
+  security:
+    # One key per downstream client. Clients send it as X-Api-Key.
+    api-keys: ${API_KEYS}                 # format: client1:key1,client2:key2
+  logging:
+    http:
+      log-bodies: ${LOG_HTTP_BODIES:true} # request/response payloads, always masked (pan, cvv, tokens, auth headers)
+      max-body-length: 10000
+
+# Swagger UI shows the contract file itself (documentation only: no code is generated from it)
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    url: /openapi/payment-api.yaml
+
+# ---------------------------------------------------------------------------
+# Logging: one JSON object per line on stdout (ECS = Elastic Common Schema)
+#   every line: @timestamp, log.level, log.logger, message, service.*, traceId, spanId,
+#               correlationId, clientId, paymentId + event fields (http.*, ni.*, payment.*)
+#   other formats: LOG_FORMAT=logstash | gelf
+# ---------------------------------------------------------------------------
+logging:
+  structured:
+    format:
+      console: ${LOG_FORMAT:ecs}
+    ecs:
+      service:
+        name: ${spring.application.name}
+        version: '@project.version@'
+        environment: ${APP_ENVIRONMENT:local}
+  level:
+    root: INFO
+    com.company.payment: INFO
+
+# ---------------------------------------------------------------------------
+# Observability: health/metrics + tracing
+#   traceId/spanId are created for every request and sent to N-Genius (traceparent header).
+#   Export to a backend (Jaeger, Tempo, Datadog, Elastic, ...) = set the OTLP endpoint, no code change:
+#     MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
+# ---------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:1.0}
+  otlp:
+    metrics:
+      export:
+        enabled: ${OTLP_METRICS_ENABLED:false}

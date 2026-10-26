@@ -1,0 +1,54 @@
+### IntelliJ HTTP Client / VS Code REST Client. Sandbox API key: sandbox-key
+@base = http://localhost:8085
+@apiKey = sandbox-key
+
+### 1. New card (use a card number from the N-Genius sandbox test cards)
+POST {{base}}/api/v1/payments
+X-Api-Key: {{apiKey}}
+Idempotency-Key: SO-1001-attempt-1
+X-Correlation-Id: demo-1
+Content-Type: application/json
+
+{
+  "merchantOrderId": "SO-1001",
+  "cardType": "CARD",
+  "card": { "pan": "<sandbox-test-card>", "expiry": "2030-12", "cvv": "123", "cardholderName": "Jane Doe" },
+  "amount": { "value": 250.00, "currency": "AED" },
+  "billingInfo": { "firstName": "Jane", "lastName": "Doe", "email": "jane@example.com",
+                   "address": "Sheikh Zayed Road 1", "city": "Dubai", "countryCode": "AE" },
+  "deviceInfo": { "ip": "203.0.113.10", "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+                  "acceptHeader": "text/html,application/xhtml+xml", "language": "en", "timeZoneOffset": "-240",
+                  "screenWidth": "1440", "screenHeight": "900", "colorDepth": "24",
+                  "javascriptEnabled": true, "javaEnabled": false, "challengeWindowSize": "05" }
+}
+
+### 2. Card on file (saved N-Genius token; CVV still required)
+POST {{base}}/api/v1/payments
+X-Api-Key: {{apiKey}}
+Idempotency-Key: SO-1002-attempt-1
+X-Correlation-Id: demo-2
+Content-Type: application/json
+
+{
+  "merchantOrderId": "SO-1002",
+  "cardType": "CARD_ON_FILE",
+  "card": { "token": "<saved-ni-card-token>", "expiry": "2030-12", "cvv": "123", "cardholderName": "Jane Doe" },
+  "amount": { "value": 99.00, "currency": "AED" },
+  "billingInfo": { "firstName": "Jane", "lastName": "Doe", "email": "jane@example.com" },
+  "deviceInfo": { "ip": "203.0.113.10", "userAgent": "Mozilla/5.0", "acceptHeader": "text/html", "language": "en" }
+}
+
+### 3. Validation error example: CARD_ON_FILE with a pan instead of a token -> 400
+POST {{base}}/api/v1/payments
+X-Api-Key: {{apiKey}}
+Idempotency-Key: SO-1003-attempt-1
+Content-Type: application/json
+
+{
+  "merchantOrderId": "SO-1003",
+  "cardType": "CARD_ON_FILE",
+  "card": { "pan": "4111111111111111", "expiry": "2030-12", "cvv": "123", "cardholderName": "Jane Doe" },
+  "amount": { "value": 10.00, "currency": "AED" },
+  "billingInfo": { "firstName": "Jane", "lastName": "Doe", "email": "jane@example.com" },
+  "deviceInfo": { "ip": "203.0.113.10", "userAgent": "Mozilla/5.0", "acceptHeader": "text/html", "language": "en" }
+}

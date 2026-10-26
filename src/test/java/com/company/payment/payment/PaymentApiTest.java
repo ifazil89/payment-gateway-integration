@@ -1,0 +1,306 @@
+package com.company.payment.payment;
+
+import com.company.payment.ni.client.NiClient;
+import com.company.payment.ni.exception.NiException;
+import com.company.payment.ni.dto.NiCardRequest;
+import com.company.payment.ni.dto.NiOrderRequest;
+import com.company.payment.ni.dto.NiOrderResponse;
+import com.company.payment.ni.dto.NiPaymentResponse;
+import com.company.payment.ni.dto.NiThreeDs;
+import com.company.payment.ni.dto.NiThreeDsRequest;
+import com.company.payment.ni.dto.NiTokenCardRequest;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.MediaType;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+import org.springframework.web.client.ResourceAccessException;
+
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.containsInAnyOrder;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+/**
+ * POST /api/v1/payments end to end (controller, validation, service, MapStruct, H2, Flyway)
+ * with only NiClient mocked. Runs without N-Genius credentials.
+ * Also checks the logging promises: correlation id round-trip, and no card number / CVV in any log line.
+ */
+@SpringBootTest(properties = {"ni.api-key=test", "ni.outlet-id=outlet-1"})
+@AutoConfigureMockMvc
+@ExtendWith(OutputCaptureExtension.class)
+class PaymentApiTest {
+
+    private static final String API_KEY = "sandbox-key";     // application-sandbox.yml: local-client:sandbox-key
+    private static final String NI = "https://api-gateway.sandbox.ngenius-payments.com/transactions/outlets/outlet-1/orders/";
+
+    @Autowired
+    MockMvc mvc;
+
+    @MockitoBean
+    NiClient niClient;
+
+    // ------------------------------------------------------------------ happy paths
+
+    @Test
+    void cardIsAuthorised() throws Exception {
+        givenOrder("order-1");
+        when(niClient.payWithCard(eq(NI + "order-1/payments/pay-1/card"), any()))
+                .thenReturn(niPayment("AUTHORISED", Map.of(), null));
+
+        mvc.perform(payment("key-1", cardRequest("250.00")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("AUTHORISED"))
+                .andExpect(jsonPath("$.orderReference").value("order-1"))
+                .andExpect(jsonPath("$.amount.value").value(250.00))
+                .andExpect(jsonPath("$.paymentId").isNotEmpty());
+
+        // two-stage AUTH order, amount in minor units
+        ArgumentCaptor<NiOrderRequest> order = ArgumentCaptor.forClass(NiOrderRequest.class);
+        verify(niClient).createOrder(order.capture());
+        assertThat(order.getValue().action()).isEqualTo("AUTH");
+        assertThat(order.getValue().amount().value()).isEqualTo(25000L);
+        assertThat(order.getValue().merchantOrderReference()).isEqualTo("SO-1001");
+        assertThat(order.getValue().emailAddress()).isEqualTo("jane@example.com");
+
+        ArgumentCaptor<NiCardRequest> card = ArgumentCaptor.forClass(NiCardRequest.class);
+        verify(niClient).payWithCard(any(), card.capture());
+        assertThat(card.getValue().pan()).isEqualTo("4111111111111111");
+    }
+
+    @Test
+    void cardOnFileUsesTheSavedToken() throws Exception {
+        givenOrder("order-2");
+        when(niClient.payWithToken(eq(NI + "order-2/payments/pay-1/saved-card"), any()))
+                .thenReturn(niPayment("AUTHORISED", Map.of(), null));
+
+        mvc.perform(payment("key-2", cardOnFileRequest()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("AUTHORISED"));
+
+        ArgumentCaptor<NiTokenCardRequest> token = ArgumentCaptor.forClass(NiTokenCardRequest.class);
+        verify(niClient).payWithToken(any(), token.capture());
+        assertThat(token.getValue().cardToken()).isEqualTo("saved-ni-token");
+        assertThat(token.getValue().cvv()).isEqualTo("123");
+        verify(niClient, never()).payWithCard(any(), any());
+    }
+
+    @Test
+    void threeDsChallengeRequired() throws Exception {
+        givenOrder("order-3");
+        when(niClient.payWithCard(any(), any())).thenReturn(niPayment("AWAIT_3DS",
+                Map.of("cnp:3ds2-authentication", Map.of("href", NI + "order-3/payments/pay-1/card/3ds2/authentications")),
+                null));
+        when(niClient.authenticateThreeDs(any(), any())).thenReturn(niPayment("AWAIT_3DS", Map.of(),
+                new NiThreeDs("C", "https://acs.bank.example/challenge", "Y3JlcQ==", null, "2.2.0")));
+
+        String body = mvc.perform(payment("key-3", cardRequest("250.00")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CHALLENGE_REQUIRED"))
+                .andReturn().getResponse().getContentAsString();
+
+        // 3DS was started with the device info and our notification URL
+        ArgumentCaptor<NiThreeDsRequest> threeDs = ArgumentCaptor.forClass(NiThreeDsRequest.class);
+        verify(niClient).authenticateThreeDs(eq(NI + "order-3/payments/pay-1/card/3ds2/authentications"),
+                threeDs.capture());
+        assertThat(threeDs.getValue().deviceChannel()).isEqualTo("BRW");
+        assertThat(threeDs.getValue().browserInfo().browserIp()).isEqualTo("203.0.113.10");
+        assertThat(threeDs.getValue().notificationUrl())
+                .contains(com.jayway.jsonpath.JsonPath.<String>read(body, "$.paymentId"));
+    }
+
+    @Test
+    void threeDsFrictionlessIsAuthorised() throws Exception {
+        givenOrder("order-4");
+        when(niClient.payWithCard(any(), any())).thenReturn(niPayment("AWAIT_3DS",
+                Map.of("cnp:3ds2-authentication", Map.of("href", NI + "order-4/payments/pay-1/card/3ds2/authentications")),
+                null));
+        when(niClient.authenticateThreeDs(any(), any())).thenReturn(niPayment("AUTHORISED", Map.of(),
+                new NiThreeDs("Y", null, null, "05", "2.2.0")));
+
+        mvc.perform(payment("key-4", cardRequest("250.00")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("AUTHORISED"));
+    }
+
+    // ------------------------------------------------------------------ N-Genius problems
+
+    @Test
+    void refusedByNgeniusIsFailed() throws Exception {
+        givenOrder("order-5");
+        when(niClient.payWithCard(any(), any())).thenThrow(new NiException(400, "/card", "{\"message\":\"declined\"}"));
+
+        mvc.perform(payment("key-5", cardRequest("250.00")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("FAILED"))
+                .andExpect(jsonPath("$.failureReason").value("Rejected by N-Genius (HTTP 400)"));
+    }
+
+    @Test
+    void timeoutIsUnknownAndRetryWithSameKeyIsSafe() throws Exception {
+        givenOrder("order-6");
+        when(niClient.payWithCard(any(), any())).thenThrow(new ResourceAccessException("Read timed out"));
+
+        mvc.perform(payment("key-6", cardRequest("250.00")))
+                .andExpect(status().isGatewayTimeout())
+                .andExpect(jsonPath("$.code").value("GATEWAY_TIMEOUT"));
+
+        // retry with the SAME key: no second order, the payment is reported as PENDING
+        mvc.perform(payment("key-6", cardRequest("250.00")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("PENDING"));
+        verify(niClient, times(1)).createOrder(any());
+    }
+
+    // ------------------------------------------------------------------ idempotency and validation
+
+    @Test
+    void sameKeyDifferentRequestIsRejected() throws Exception {
+        givenOrder("order-7");
+        when(niClient.payWithCard(any(), any())).thenReturn(niPayment("AUTHORISED", Map.of(), null));
+        mvc.perform(payment("key-7", cardRequest("250.00"))).andExpect(status().isOk());
+
+        mvc.perform(payment("key-7", cardRequest("99.00")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+    }
+
+    @Test
+    void cardFieldsMustMatchCardType() throws Exception {
+        String body = cardOnFileRequest().replace("\"token\": \"saved-ni-token\"", "\"pan\": \"4111111111111111\"");
+
+        mvc.perform(payment("key-8", body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.errors[*].field", containsInAnyOrder("card.token", "card.pan")));
+        verify(niClient, never()).createOrder(any());
+    }
+
+    @Test
+    void tooManyDecimalsIsRejected() throws Exception {
+        mvc.perform(payment("key-9", cardRequest("10.001")))
+                .andExpect(status().is(422))
+                .andExpect(jsonPath("$.code").value("INVALID_AMOUNT"));
+        verify(niClient, never()).createOrder(any());
+    }
+
+    @Test
+    void apiKeyIsRequired() throws Exception {
+        mvc.perform(post("/api/v1/payments").contentType(MediaType.APPLICATION_JSON).content(cardRequest("1.00")))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void idempotencyKeyIsRequired() throws Exception {
+        mvc.perform(post("/api/v1/payments").header("X-Api-Key", API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON).content(cardRequest("1.00")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("MISSING_HEADER"));
+    }
+
+    @Test
+    void expiredCardIsRejected() throws Exception {
+        mvc.perform(payment("key-10", cardRequest("1.00").replace("2030-12", "2020-01")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors[0].field").value("card.expiry"));
+    }
+
+    // ------------------------------------------------------------------ logging and tracing
+
+    @Test
+    void correlationIdIsReturnedAndInErrors() throws Exception {
+        mvc.perform(payment("key-11", cardRequest("10.001")).header("X-Correlation-Id", "my-corr-123"))
+                .andExpect(status().is(422))
+                .andExpect(header().string("X-Correlation-Id", "my-corr-123"))
+                .andExpect(jsonPath("$.correlationId").value("my-corr-123"));
+    }
+
+    @Test
+    void unsafeCorrelationIdIsReplaced() throws Exception {
+        mvc.perform(payment("key-12", cardRequest("10.001")).header("X-Correlation-Id", "bad\nvalue"))
+                .andExpect(header().string("X-Correlation-Id", org.hamcrest.Matchers.not("bad\nvalue")));
+    }
+
+    @Test
+    void requestAndResponseAreLoggedWithoutCardData(CapturedOutput output) throws Exception {
+        givenOrder("order-13");
+        when(niClient.payWithCard(any(), any())).thenReturn(niPayment("AUTHORISED", Map.of(), null));
+
+        mvc.perform(payment("key-13", cardRequest("250.00")).header("X-Correlation-Id", "log-test-13"))
+                .andExpect(status().isOk());
+
+        assertThat(output.getOut())
+                .contains("HTTP IN  --> POST /api/v1/payments")
+                .contains("HTTP IN  <-- 200 POST /api/v1/payments")
+                .contains("log-test-13")                       // correlationId on the lines
+                .contains("411111******1111")                  // masked PAN in the logged body
+                .doesNotContain("4111111111111111")            // never the full card number
+                .doesNotContainPattern("cvv\\W{1,8}123")       // CVV masked (JSON in JSON is escaped)
+                .doesNotContain(API_KEY);                      // X-Api-Key header masked
+    }
+
+    // ------------------------------------------------------------------ helpers
+
+    private void givenOrder(String orderRef) {
+        NiPaymentResponse started = new NiPaymentResponse("pay-1", orderRef, "STARTED", null, null, Map.of(
+                "payment:card", Map.of("href", NI + orderRef + "/payments/pay-1/card"),
+                "payment:saved-card", Map.of("href", NI + orderRef + "/payments/pay-1/saved-card")));
+        when(niClient.createOrder(any()))
+                .thenReturn(new NiOrderResponse(orderRef, null, new NiOrderResponse.Embedded(List.of(started))));
+    }
+
+    private static NiPaymentResponse niPayment(String state, Map<String, Object> links, NiThreeDs threeDs) {
+        return new NiPaymentResponse("pay-1", null, state, null, threeDs, links);
+    }
+
+    private static MockHttpServletRequestBuilder payment(String idempotencyKey, String body) {
+        return post("/api/v1/payments")
+                .header("X-Api-Key", API_KEY)
+                .header("Idempotency-Key", idempotencyKey)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body);
+    }
+
+    private static String cardRequest(String amount) {
+        return request("CARD", "\"pan\": \"4111111111111111\"", amount);
+    }
+
+    private static String cardOnFileRequest() {
+        return request("CARD_ON_FILE", "\"token\": \"saved-ni-token\"", "250.00");
+    }
+
+    private static String request(String cardType, String panOrToken, String amount) {
+        return """
+                {
+                  "merchantOrderId": "SO-1001",
+                  "cardType": "%s",
+                  "card": { %s, "expiry": "2030-12", "cvv": "123", "cardholderName": "Jane Doe" },
+                  "amount": { "value": %s, "currency": "AED" },
+                  "billingInfo": { "firstName": "Jane", "lastName": "Doe", "email": "jane@example.com",
+                                   "address": "Sheikh Zayed Road 1", "city": "Dubai", "countryCode": "AE" },
+                  "deviceInfo": { "ip": "203.0.113.10", "userAgent": "Mozilla/5.0", "acceptHeader": "text/html",
+                                  "language": "en", "timeZoneOffset": "-240", "screenWidth": "1440",
+                                  "screenHeight": "900", "colorDepth": "24", "javascriptEnabled": true,
+                                  "javaEnabled": false }
+                }
+                """.formatted(cardType, panOrToken, amount);
+    }
+}

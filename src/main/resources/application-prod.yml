@@ -1,0 +1,31 @@
+# Production: live N-Genius + PostgreSQL. All secrets from the environment / secret store.
+ni:
+  base-url: ${NI_BASE_URL:https://api-gateway.ngenius-payments.com}
+
+spring:
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+
+# The contract is published elsewhere (developer portal); no Swagger UI in production
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+logging:
+  structured:
+    ecs:
+      service:
+        environment: ${APP_ENVIRONMENT:prod}
+
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:0.1}

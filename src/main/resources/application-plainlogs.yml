@@ -1,0 +1,9 @@
+# Human-readable console logs for local debugging (instead of JSON):
+#   mvn spring-boot:run -Dspring-boot.run.profiles=sandbox,plainlogs
+# Each line: time level [traceId,spanId] [correlationId] [clientId] [paymentId] logger : message + fields
+logging:
+  structured:
+    format:
+      console: ""
+  pattern:
+    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %5p [%X{traceId:-},%X{spanId:-}] [%X{correlationId:-}] [%X{clientId:-}] [%X{paymentId:-}] %-40.40logger{39} : %m%n    %kvp%n"

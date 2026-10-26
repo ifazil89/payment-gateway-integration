@@ -1,0 +1,414 @@
+openapi: 3.0.3
+info:
+  title: Payment API
+  version: 1.0.0
+  description: |
+    Card payments for downstream clients, processed by N-Genius (Network International).
+
+    **Two-stage:** `POST /api/v1/payments` only *authorises* (reserves) the money; capture is a separate API.
+
+    **Next call depends on `status`:**
+
+    | status | next |
+    |---|---|
+    | `AUTHORISED` | capture API |
+    | `CHALLENGE_REQUIRED` | 3DS API |
+    | `PENDING` | status API, or retry with the **same** `Idempotency-Key` |
+    | `DECLINED` / `FAILED` | stop, or a new attempt with a new `Idempotency-Key` |
+
+    **Tracing:** send `X-Correlation-Id` (optional). Every response returns `X-Correlation-Id` and `X-Trace-Id`;
+    quote them when reporting a problem.
+
+servers:
+  - url: /
+
+security:
+  - apiKey: []
+
+tags:
+  - name: Payments
+    description: Authorise card payments
+
+paths:
+  /api/v1/payments:
+    post:
+      tags: [Payments]
+      operationId: createPayment
+      summary: Authorise a payment with a new card or a saved card token
+      description: |
+        1. Creates an **AUTH** order at N-Genius.
+        2. Sends the card (`CARD`) or the saved N-Genius token (`CARD_ON_FILE`).
+        3. If N-Genius asks for 3DS, starts EMV 3DS 2.x with `deviceInfo`:
+           frictionless -> `AUTHORISED`, challenge -> `CHALLENGE_REQUIRED`.
+
+        The same `Idempotency-Key` returns the same payment: the card is never charged twice.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+            examples:
+              card:
+                summary: New card
+                value:
+                  merchantOrderId: SO-1001
+                  cardType: CARD
+                  card: { pan: '4111111111111111', expiry: '2030-12', cvv: '123', cardholderName: Jane Doe }
+                  amount: { value: 250.00, currency: AED }
+                  billingInfo: { firstName: Jane, lastName: Doe, email: jane@example.com,
+                                 address: Sheikh Zayed Road 1, city: Dubai, countryCode: AE }
+                  deviceInfo: { ip: 203.0.113.10, userAgent: 'Mozilla/5.0', acceptHeader: text/html,
+                                language: en, timeZoneOffset: '-240', screenWidth: '1440', screenHeight: '900',
+                                colorDepth: '24', javascriptEnabled: true, javaEnabled: false }
+              cardOnFile:
+                summary: Saved card (N-Genius token)
+                value:
+                  merchantOrderId: SO-1002
+                  cardType: CARD_ON_FILE
+                  card: { token: '<saved-ni-card-token>', expiry: '2030-12', cvv: '123', cardholderName: Jane Doe }
+                  amount: { value: 99.00, currency: AED }
+                  billingInfo: { firstName: Jane, lastName: Doe, email: jane@example.com }
+                  deviceInfo: { ip: 203.0.113.10, userAgent: 'Mozilla/5.0', acceptHeader: text/html, language: en }
+      responses:
+        '200':
+          description: Processed. The outcome is in `status` (also for DECLINED / FAILED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/GatewayError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+      description: Per-client API key
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Unique per payment attempt. Reuse the same value when retrying the same attempt.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 100
+      example: SO-1001-attempt-1
+
+  responses:
+    BadRequest:
+      description: VALIDATION_ERROR (with field errors), MALFORMED_REQUEST, MISSING_HEADER
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          examples:
+            validationError:
+              summary: Field validation failed (card fields do not match cardType)
+              value:
+                code: VALIDATION_ERROR
+                message: Request validation failed
+                correlationId: demo-1
+                traceId: 4bf92f3577b34da6a3ce929d0e0e4736
+                timestamp: '2026-10-24T07:00:01.412Z'
+                errors:
+                  - { field: card.token, message: is required for cardType CARD_ON_FILE }
+                  - { field: card.pan, message: must be empty for cardType CARD_ON_FILE }
+            schemaError:
+              summary: Format error from the schema
+              value:
+                code: VALIDATION_ERROR
+                message: Request validation failed
+                correlationId: demo-1
+                traceId: 4bf92f3577b34da6a3ce929d0e0e4736
+                timestamp: '2026-10-24T07:00:01.412Z'
+                errors:
+                  - { field: card.expiry, message: 'must match "^\d{4}-(0[1-9]|1[0-2])$"' }
+                  - { field: billingInfo.email, message: must be a well-formed email address }
+            malformedRequest:
+              summary: Body is not valid JSON or has an unknown enum value
+              value:
+                code: MALFORMED_REQUEST
+                message: Request body is not valid JSON or has a wrong value (e.g. unknown cardType)
+                correlationId: demo-1
+                traceId: 4bf92f3577b34da6a3ce929d0e0e4736
+                timestamp: '2026-10-24T07:00:01.412Z'
+            missingHeader:
+              summary: Idempotency-Key header missing
+              value:
+                code: MISSING_HEADER
+                message: Header Idempotency-Key is required
+                correlationId: demo-1
+                traceId: 4bf92f3577b34da6a3ce929d0e0e4736
+                timestamp: '2026-10-24T07:00:01.412Z'
+    Unauthorized:
+      description: UNAUTHORIZED - missing or invalid X-Api-Key
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            code: UNAUTHORIZED
+            message: Missing or invalid X-Api-Key
+            correlationId: demo-1
+            traceId: 4bf92f3577b34da6a3ce929d0e0e4736
+            timestamp: '2026-10-24T07:00:01.412Z'
+    Conflict:
+      description: IDEMPOTENCY_KEY_REUSED (same key, different request) or REQUEST_IN_PROGRESS
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          examples:
+            keyReused:
+              summary: Same Idempotency-Key, different request
+              value:
+                code: IDEMPOTENCY_KEY_REUSED
+                message: This Idempotency-Key was already used for a different request
+                correlationId: demo-1
+                traceId: 4bf92f3577b34da6a3ce929d0e0e4736
+                timestamp: '2026-10-24T07:00:01.412Z'
+            inProgress:
+              summary: Same Idempotency-Key sent twice at the same moment
+              value:
+                code: REQUEST_IN_PROGRESS
+                message: A request with this Idempotency-Key is already being processed
+                correlationId: demo-1
+                traceId: 4bf92f3577b34da6a3ce929d0e0e4736
+                timestamp: '2026-10-24T07:00:01.412Z'
+    Unprocessable:
+      description: INVALID_AMOUNT (e.g. 3 decimals for AED, unknown currency), GATEWAY_REJECTED
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            code: INVALID_AMOUNT
+            message: AED allows 2 decimals, got 10.001
+            correlationId: demo-1
+            traceId: 4bf92f3577b34da6a3ce929d0e0e4736
+            timestamp: '2026-10-24T07:00:01.412Z'
+    InternalError:
+      description: INTERNAL_ERROR
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            code: INTERNAL_ERROR
+            message: Unexpected error
+            correlationId: demo-1
+            traceId: 4bf92f3577b34da6a3ce929d0e0e4736
+            timestamp: '2026-10-24T07:00:01.412Z'
+    GatewayError:
+      description: GATEWAY_ERROR - N-Genius returned a server error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            code: GATEWAY_ERROR
+            message: N-Genius returned an error
+            correlationId: demo-1
+            traceId: 4bf92f3577b34da6a3ce929d0e0e4736
+            timestamp: '2026-10-24T07:00:01.412Z'
+    GatewayTimeout:
+      description: GATEWAY_TIMEOUT - N-Genius did not answer; outcome UNKNOWN. Retry with the SAME Idempotency-Key.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            code: GATEWAY_TIMEOUT
+            message: N-Genius did not answer; the outcome is unknown. Retry with the same Idempotency-Key.
+            correlationId: demo-1
+            traceId: 4bf92f3577b34da6a3ce929d0e0e4736
+            timestamp: '2026-10-24T07:00:01.412Z'
+
+  schemas:
+    PaymentRequest:
+      type: object
+      required: [merchantOrderId, cardType, card, amount, billingInfo, deviceInfo]
+      properties:
+        merchantOrderId:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Your order id (sent to N-Genius as merchantOrderReference)
+          example: SO-1001
+        cardType:
+          $ref: '#/components/schemas/CardType'
+        card:
+          $ref: '#/components/schemas/CardInfo'
+        amount:
+          $ref: '#/components/schemas/Amount'
+        billingInfo:
+          $ref: '#/components/schemas/BillingInfo'
+        deviceInfo:
+          $ref: '#/components/schemas/DeviceInfo'
+
+    CardType:
+      type: string
+      enum: [CARD, CARD_ON_FILE]
+      description: |
+        CARD = new card (pan required, token empty).
+        CARD_ON_FILE = saved N-Genius card token (token required, pan empty).
+
+    CardInfo:
+      type: object
+      description: One card object for both card types; `cardType` decides which fields are required.
+      required: [expiry, cvv, cardholderName]
+      properties:
+        pan:
+          type: string
+          pattern: '^\d{12,19}$'
+          description: Card number, digits only. CARD only.
+          example: '4111111111111111'
+        token:
+          type: string
+          minLength: 1
+          maxLength: 512
+          description: Saved N-Genius card token. CARD_ON_FILE only.
+        expiry:
+          type: string
+          pattern: '^\d{4}-(0[1-9]|1[0-2])$'
+          description: YYYY-MM
+          example: '2030-12'
+        cvv:
+          type: string
+          pattern: '^\d{3,4}$'
+          example: '123'
+        cardholderName:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: Jane Doe
+
+    Amount:
+      type: object
+      required: [value, currency]
+      description: MAJOR units (AED 250.00). Max decimals = the currency's decimals (AED 2, KWD 3).
+      properties:
+        value:
+          type: number
+          minimum: 0.001
+          example: 250.00
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+          description: ISO 4217
+          example: AED
+
+    BillingInfo:
+      type: object
+      required: [firstName, lastName, email]
+      properties:
+        firstName: { type: string, minLength: 1, maxLength: 60, example: Jane }
+        lastName: { type: string, minLength: 1, maxLength: 60, example: Doe }
+        email: { type: string, format: email, maxLength: 254, example: jane@example.com }
+        address: { type: string, maxLength: 200, example: Sheikh Zayed Road 1 }
+        city: { type: string, maxLength: 60, example: Dubai }
+        countryCode: { type: string, pattern: '^[A-Z]{2}$', description: ISO 3166-1 alpha-2, example: AE }
+
+    DeviceInfo:
+      type: object
+      description: Shopper's browser data, used for EMV 3DS 2.x when N-Genius asks for 3DS.
+      required: [ip, userAgent, acceptHeader, language]
+      properties:
+        ip: { type: string, minLength: 1, maxLength: 45, example: 203.0.113.10 }
+        userAgent: { type: string, minLength: 1, maxLength: 2048, example: 'Mozilla/5.0' }
+        acceptHeader: { type: string, minLength: 1, maxLength: 2048, example: text/html }
+        language: { type: string, minLength: 1, maxLength: 8, example: en }
+        timeZoneOffset: { type: string, pattern: '^-?\d{1,4}$', description: 'new Date().getTimezoneOffset() (UTC+4 = -240)', example: '-240' }
+        screenWidth: { type: string, pattern: '^\d{1,6}$', example: '1440' }
+        screenHeight: { type: string, pattern: '^\d{1,6}$', example: '900' }
+        colorDepth: { type: string, pattern: '^\d{1,2}$', example: '24' }
+        javascriptEnabled: { type: boolean, example: true }
+        javaEnabled: { type: boolean, example: false }
+        challengeWindowSize:
+          type: string
+          pattern: '^0[1-5]$'
+          description: 01=250x400, 02=390x400, 03=500x600, 04=600x400, 05=full screen (default)
+          example: '05'
+
+    PaymentResponse:
+      type: object
+      required: [paymentId, merchantOrderId, status, amount, createdAt]
+      properties:
+        paymentId:
+          type: string
+          description: Our payment id - use it in the next API call
+          example: 7f3c2a9e-1b4d-4e8f-9a2b-3c4d5e6f7a8b
+        merchantOrderId:
+          type: string
+          example: SO-1001
+        status:
+          $ref: '#/components/schemas/PaymentStatus'
+        amount:
+          $ref: '#/components/schemas/Amount'
+        orderReference:
+          type: string
+          description: N-Genius order reference (support / reconciliation)
+        failureReason:
+          type: string
+          description: Why the payment was declined or failed
+        createdAt:
+          type: string
+          format: date-time
+
+    PaymentStatus:
+      type: string
+      enum: [AUTHORISED, CHALLENGE_REQUIRED, PENDING, DECLINED, FAILED]
+
+    ErrorResponse:
+      type: object
+      description: Returned for every non-200 response. `errors` is present only for VALIDATION_ERROR.
+      required: [code, message, timestamp]
+      properties:
+        code:
+          type: string
+          description: |
+            VALIDATION_ERROR, MALFORMED_REQUEST, MISSING_HEADER, UNAUTHORIZED, IDEMPOTENCY_KEY_REUSED,
+            REQUEST_IN_PROGRESS, INVALID_AMOUNT, GATEWAY_REJECTED, GATEWAY_ERROR, GATEWAY_TIMEOUT, REQUEST_ERROR,
+            INTERNAL_ERROR
+          example: VALIDATION_ERROR
+        message:
+          type: string
+          example: Request validation failed
+        correlationId:
+          type: string
+          description: X-Correlation-Id of the request (sent by you or generated). Quote it when reporting a problem.
+          example: demo-1
+        traceId:
+          type: string
+          description: Distributed trace id (also in the X-Trace-Id response header)
+          example: 4bf92f3577b34da6a3ce929d0e0e4736
+        timestamp:
+          type: string
+          format: date-time
+          example: '2026-10-24T07:00:01.412Z'
+        errors:
+          type: array
+          description: One entry per invalid field (VALIDATION_ERROR only)
+          items:
+            $ref: '#/components/schemas/ErrorDetail'
+
+    ErrorDetail:
+      type: object
+      description: One invalid field
+      required: [field, message]
+      properties:
+        field: { type: string, example: card.pan }
+        message: { type: string, example: is required for cardType CARD }

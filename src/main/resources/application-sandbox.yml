@@ -1,0 +1,21 @@
+# Sandbox (default profile): N-Genius sandbox + in-memory H2.
+# Only NI_API_KEY and NI_OUTLET_ID must be provided.
+ni:
+  base-url: ${NI_BASE_URL:https://api-gateway.sandbox.ngenius-payments.com}
+  threeds-notification-url: ${NI_THREEDS_NOTIFICATION_URL:http://localhost:8085/api/v1/threeds/{paymentId}/notification}
+
+app:
+  security:
+    api-keys: ${API_KEYS:local-client:sandbox-key}
+
+spring:
+  datasource:
+    url: jdbc:h2:mem:payment;DB_CLOSE_DELAY=-1;MODE=PostgreSQL
+    username: sa
+    password:
+
+logging:
+  structured:
+    ecs:
+      service:
+        environment: sandbox
