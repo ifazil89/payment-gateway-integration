@@ -1,7 +1,8 @@
 # ni-payment-integration
 
 Payment API for downstream clients, processed by **N-Genius (Network International)**.
-Step 1: **`POST /api/v1/payments`**, a two-stage authorisation with a card or a card-on-file token, including 3DS authentication.
+**`POST /api/v1/payments`**: a two-stage authorisation with a card or a card-on-file token, including EMV 3DS 2.x
+(frictionless and challenge). **`GET /api/v1/payments/{paymentId}`**: the current status.
 
 Spring Boot 4.1.1 · Java 21 · OpenAPI docs (Swagger UI) · MapStruct 1.6.3 · Lombok ·
 OpenTelemetry tracing · ECS JSON logs · Flyway · PostgreSQL (H2 in sandbox)
@@ -62,9 +63,9 @@ src/main/java/com.company.payment
 ├── PaymentApplication
 │
 ├── payment/                             FEATURE: authorise a payment
-│   ├── api/PaymentsApi                  interface: POST /api/v1/payments, headers, @Valid
+│   ├── api/PaymentsApi                  interface: POST /api/v1/payments, GET /api/v1/payments/{id}, headers, @Valid
 │   ├── model/                           PaymentRequest, CardInfo, CardType, Amount, BillingInfo, DeviceInfo,
-│   │                                    PaymentResponse, PaymentStatus (records: JSON + Bean Validation)
+│   │                                    PaymentResponse, ThreeDsChallenge, PaymentStatus (records: JSON + Bean Validation)
 │   ├── controller/PaymentController     implements PaymentsApi (one line)
 │   ├── service/PaymentService           the flow, step by step
 │   ├── validation/PaymentRequestValidator   cardType vs pan/token, expiry
@@ -72,6 +73,11 @@ src/main/java/com.company.payment
 │   ├── mapper/PaymentNiMapper           MapStruct: API model -> N-Genius DTOs
 │   ├── entity/Payment, PaymentState, PaymentCardType
 │   └── repository/PaymentRepository
+│
+├── threeds/                             FEATURE: finish a 3DS challenge (uses payment/entity + repository)
+│   ├── api/ThreeDsApi                   interface: POST /api/v1/threeds/{id}/notification (browser, no API key)
+│   ├── controller/ThreeDsController     303 to returnUrl, or a small result page
+│   └── service/ThreeDsService           the challenge result, step by step
 │
 ├── ni/                                  N-Genius, SHARED by payment / threeds / token
 │   ├── client/NiClient                  every N-Genius call, one method each
@@ -86,12 +92,12 @@ src/main/java/com.company.payment
     ├── model/ErrorResponse, ErrorDetail  the error body of every API
     ├── logging/CorrelationIdFilter, HttpLoggingFilter, RestClientLoggingInterceptor,
     │           SensitiveDataMasker, LogFields, LoggingConfig, LoggingProperties
-    ├── security/ApiKeyFilter, SecurityConfig
+    ├── security/ApiKeyFilter, SecurityConfig, ReturnUrlAllowlist
     └── util/Amounts
 ```
 
-**Next features follow the same shape:** `threeds/{controller,service,mapper,...}` and `token/{...}`.
-Each has its own `api/ThreeDsApi` / `api/TokenApi` interface and `model/` classes, documents its paths in the YAML, and reuses `ni/client/NiClient`.
+**Next features follow the same shape** as `payment/` and `threeds/`, e.g. `capture/{api,controller,service,...}`.
+Each has its own `api/` interface (and `model/` classes when it has its own JSON), documents its paths in the YAML, and reuses `ni/client/NiClient`.
 
 **A request goes through three layers:**
 - `PaymentController` (implements `PaymentsApi`)
@@ -123,13 +129,17 @@ Headers:
 | `CARD` | `pan`, `expiry`, `cvv`, `cardholderName` | `token` |
 | `CARD_ON_FILE` | `token` (the saved N-Genius card token), `expiry`, `cvv`, `cardholderName` | `pan` |
 
+`returnUrl` (optional) is where the shopper's browser goes after a 3DS challenge. It must start with one of the
+client's entries in `app.security.return-urls` (scheme, host and port equal, path under the entry's path);
+otherwise `400 VALIDATION_ERROR` on `returnUrl`. This keeps the redirect from being an open redirect.
+
 **The client decides the next call from `status`:**
 
 | status | Meaning | Next API |
 |---|---|---|
 | `AUTHORISED` | money reserved (also after frictionless 3DS) | capture (step to come) |
-| `CHALLENGE_REQUIRED` | shopper must complete a 3DS challenge | 3DS API (next step) |
-| `PENDING` | N-Genius hasn't confirmed yet | status API (to come), or retry with the **same** Idempotency-Key |
+| `CHALLENGE_REQUIRED` | shopper must complete a 3DS challenge (`threeDs` in the response) | [3DS challenge](#3ds-challenge), then `GET /api/v1/payments/{paymentId}` |
+| `PENDING` | N-Genius hasn't confirmed yet | `GET /api/v1/payments/{paymentId}` later, or retry with the **same** Idempotency-Key |
 | `DECLINED` / `FAILED` | refused | stop, or a new attempt with a new Idempotency-Key |
 
 ### Flow (`PaymentService.createPayment`)
@@ -141,13 +151,47 @@ Headers:
 | 3 | Save the payment | — | `CREATED` |
 | 4 | Create a two-stage **AUTH** order | `POST /transactions/outlets/{outlet}/orders` | `CREATED` + order ref |
 | 5 | `CARD`: card · `CARD_ON_FILE`: saved token | `PUT payment:card` · `PUT payment:saved-card` | `AUTHORISED` / `AWAITING_3DS` / `FAILED` |
-| 6 | If `AWAITING_3DS`: 3DS authentication with `deviceInfo` | `POST cnp:3ds2-authentication` | `AUTHORISED` / `CHALLENGE_REQUIRED` |
+| 6 | If `AWAITING_3DS`: 3DS authentication with `deviceInfo` | `POST cnp:3ds2-authentication` | `AUTHORISED` / `CHALLENGE_REQUIRED` (stores acsUrl, creq and the `cnp:3ds2-challenge-response` link) |
 | 7 | Save and return | — | |
 
 **Failures:**
 - **N-Genius 4xx:** `200` with `status: FAILED`.
 - **N-Genius 5xx:** `502`.
 - **Timeout:** `504`. The outcome is unknown, so the payment stays `PENDING`; retrying with the same Idempotency-Key is safe.
+
+### 3DS challenge
+
+```
+client backend      shopper's browser                 this service                     N-Genius / issuer
+ POST /payments ------------------------------------> CHALLENGE_REQUIRED + threeDs{acsUrl, creq}
+ renders form ---->  POST creq --------------------------------------------------------> issuer ACS (OTP, app...)
+                     POST cres ---------------------> /api/v1/threeds/{id}/notification
+                                                      POST cnp:3ds2-challenge-response -> N-Genius
+                     <-- 303 returnUrl?paymentId=..&status=..
+ GET /payments/{id} --------------------------------> AUTHORISED / DECLINED / FAILED / PENDING
+```
+
+1. The client renders, in the shopper's browser, a form posting `creq` to `threeDs.acsUrl` (HTML in the YAML, `ThreeDsChallenge`).
+2. The issuer makes the browser post `cres` to `ni.threeds-notification-url` = `POST /api/v1/threeds/{paymentId}/notification`.
+   **This path has no API key** (`ApiKeyFilter.PUBLIC_PATH`): the caller is a browser. It only acts on a payment in
+   `CHALLENGE_REQUIRED`, found by its unguessable id, and N-Genius verifies the CRes.
+3. `ThreeDsService.completeChallenge`:
+
+| # | Step | N-Genius call | State after |
+|---|---|---|---|
+| 1 | Find the payment; anything but `CHALLENGE_REQUIRED` gets its current status (repeated post, no N-Genius call) | — | — |
+| 2 | Claim it, saved under the optimistic lock (`@Version`): a concurrent post loses and gets the current status | — | `AWAITING_3DS` (`PENDING`) |
+| 3 | Send the CRes | `POST cnp:3ds2-challenge-response` `{base64EncodedCRes}` | `AUTHORISED` / `DECLINED` / `FAILED` |
+| 4 | 303 to `returnUrl` + `paymentId` + `status`, or a small HTML page without `returnUrl` | — | |
+
+The caller is a browser, so N-Genius problems are not 502/504 here: **4xx** -> `FAILED`;
+**5xx / timeout** -> stays `PENDING` (outcome unknown, the CRes is not sent again). In every case the client reads the
+trusted status with `GET /api/v1/payments/{paymentId}`; the `status` in the redirect can be changed by the shopper.
+
+### GET /api/v1/payments/{paymentId}
+
+The stored status (same `PaymentResponse` as the POST; `threeDs` only while `CHALLENGE_REQUIRED`).
+A client only sees its own payments: another client's id is `404 PAYMENT_NOT_FOUND`.
 
 ### Error response
 
@@ -206,8 +250,9 @@ To change the error shape, edit `common/model/ErrorResponse` / `ErrorDetail`, th
 
 | HTTP | code |
 |---|---|
-| 400 | `VALIDATION_ERROR` (with field errors such as `card.pan`), `MALFORMED_REQUEST`, `MISSING_HEADER` |
+| 400 | `VALIDATION_ERROR` (with field errors such as `card.pan`, `returnUrl`), `MALFORMED_REQUEST`, `MISSING_HEADER`, `MISSING_CRES` |
 | 401 | `UNAUTHORIZED` |
+| 404 | `PAYMENT_NOT_FOUND` |
 | 409 | `IDEMPOTENCY_KEY_REUSED`, `REQUEST_IN_PROGRESS` |
 | 422 | `INVALID_AMOUNT` |
 | 500 | `INTERNAL_ERROR` |
@@ -339,7 +384,8 @@ Most teams keep stdout plus an agent; it survives a collector outage.
 2. Search the logs for it. You see the inbound request, every N-Genius request and response with bodies, the business lines and the final response, in order.
 3. The `payment` table keeps the raw N-Genius state (`ni_state`), the order reference and the 3DS `trans_status`.
 
-Breakpoints: `PaymentService.createPayment` (the whole flow) and `NiClient.call` (every N-Genius request).
+Breakpoints: `PaymentService.createPayment` (the whole flow), `ThreeDsService.completeChallenge` (the challenge result)
+and `NiClient.call` (every N-Genius request).
 
 ---
 
@@ -349,8 +395,9 @@ Breakpoints: `PaymentService.createPayment` (the whole flow) and `NiClient.call`
 |---|---|---|
 | `ni.base-url` | `NI_BASE_URL` | sandbox default set; live: `https://api-gateway.ngenius-payments.com` |
 | `ni.api-key`, `ni.outlet-id` | `NI_API_KEY`, `NI_OUTLET_ID` | from the N-Genius portal |
-| `ni.threeds-notification-url` | `NI_THREEDS_NOTIFICATION_URL` | public URL; `{paymentId}` is replaced. The endpoint is built with the 3DS API |
+| `ni.threeds-notification-url` | `NI_THREEDS_NOTIFICATION_URL` | public URL of `POST /api/v1/threeds/{paymentId}/notification`; `{paymentId}` is replaced. Must be reachable from shoppers' browsers |
 | `app.security.api-keys` | `API_KEYS` | `client1:key1,client2:key2` (key ≥ 8 chars) |
+| `app.security.return-urls` | `RETURN_URLS` | allowed `returnUrl` prefixes per client: `client1:https://shop.example.com/checkout/,client2:...` (empty = none; sandbox: `local-client:http://localhost:3000/`) |
 | `logging.structured.format.console` | `LOG_FORMAT` | `ecs` (default), `logstash`, `gelf` |
 | `app.logging.http.log-bodies` | `LOG_HTTP_BODIES` | `true` (default, masked) / `false` |
 | `logging.structured.ecs.service.environment` | `APP_ENVIRONMENT` | shown as `service.environment` |
@@ -363,15 +410,17 @@ Breakpoints: `PaymentService.createPayment` (the whole flow) and `NiClient.call`
 ## 7. Notes
 
 **Verify in the N-Genius sandbox:**
-- the link names `payment:card`, `payment:saved-card` and `cnp:3ds2-authentication` (`NiLinks`)
+- the link names `payment:card`, `payment:saved-card`, `cnp:3ds2-authentication` and `cnp:3ds2-challenge-response` (`NiLinks`)
+- the challenge-response body `{"base64EncodedCRes": ...}` and that the ACS posts the form field `cres`
+- `threeDSCompInd: "Y"` is sent although this service does not run the 3DS Method (device fingerprint) step;
+  N-Genius may expect `"N"`/`"U"` without it, or the 3DS Method before authentication
 - whether `merchantOrderReference` is accepted
 - the exact N-Genius state names (`PaymentState.fromNi`)
 
 Every N-Genius request and response is logged, so one sandbox run shows all of these.
 
 **Next steps:**
-1. 3DS API (challenge result, finish the authorisation)
-2. Capture
-3. Status / reconciliation
-4. Webhooks
-5. Token
+1. Capture
+2. Reconciliation (resolve `PENDING` with N-Genius, e.g. after a timeout on the challenge result)
+3. Webhooks
+4. Token

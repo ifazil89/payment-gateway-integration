@@ -35,6 +35,9 @@ app:
   security:
     # One key per downstream client. Clients send it as X-Api-Key.
     api-keys: ${API_KEYS}                 # format: client1:key1,client2:key2
+    # Where each client may send the shopper back after a 3DS challenge (returnUrl in the request).
+    # Format: client1:https://shop.example.com/checkout/,client2:https://other.example.com/ (empty = none allowed)
+    return-urls: ${RETURN_URLS:}
   logging:
     http:
       log-bodies: ${LOG_HTTP_BODIES:true} # request/response payloads, always masked (pan, cvv, tokens, auth headers)

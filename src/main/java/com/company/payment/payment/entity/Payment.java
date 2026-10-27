@@ -60,6 +60,10 @@ public class Payment {
     @Setter
     @Column(nullable = false)
     private String email;
+    /** Where the shopper is sent after a 3DS challenge (checked against the client's allowed return URLs). */
+    @Setter
+    @Column(name = "return_url")
+    private String returnUrl;
 
     @Enumerated(EnumType.STRING)
     @JdbcTypeCode(SqlTypes.VARCHAR)
@@ -83,6 +87,9 @@ public class Payment {
     /** Base64 challenge request, needed by the 3DS API when state = CHALLENGE_REQUIRED. */
     @Column(name = "threeds_creq")
     private String threeDsCreq;
+    /** N-Genius "cnp:3ds2-challenge-response" link: where the challenge result (CRes) is sent. */
+    @Column(name = "threeds_challenge_response_url")
+    private String threeDsChallengeResponseUrl;
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
@@ -120,13 +127,29 @@ public class Payment {
         touch();
     }
 
-    public void challengeRequired(String niState, String transStatus, String acsUrl, String creq) {
+    public void challengeRequired(String niState, String transStatus, String acsUrl, String creq,
+                                  String challengeResponseUrl) {
         this.niState = niState;
         this.threeDsTransStatus = transStatus;
         this.threeDsAcsUrl = acsUrl;
         this.threeDsCreq = creq;
+        this.threeDsChallengeResponseUrl = challengeResponseUrl;
         this.state = PaymentState.CHALLENGE_REQUIRED;
         touch();
+    }
+
+    /** The shopper finished the challenge: from now on N-Genius is finishing the authentication. */
+    public void challengeResultReceived() {
+        this.state = PaymentState.AWAITING_3DS;
+        touch();
+    }
+
+    /** N-Genius answered the challenge result. */
+    public void challengeCompleted(String niState, String transStatus) {
+        if (transStatus != null) {
+            this.threeDsTransStatus = transStatus;
+        }
+        niAnswered(niState);
     }
 
     public void threeDsAuthenticated(String niState, String transStatus) {

@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * /api/** is for downstream clients only. Each client has its own key (app.security.api-keys,
@@ -33,6 +34,12 @@ public class ApiKeyFilter extends OncePerRequestFilter {
     public static final int ORDER = HttpLoggingFilter.ORDER + 10;
     public static final String HEADER = "X-Api-Key";
     private static final String CLIENT_ATTRIBUTE = ApiKeyFilter.class.getName() + ".client";
+    /**
+     * The 3DS notification is posted by the shopper's browser (sent there by the card issuer), not by a
+     * client, so it has no API key. It only acts on a payment waiting for a challenge, by its unguessable id,
+     * and N-Genius verifies the CRes it forwards.
+     */
+    private static final Pattern PUBLIC_PATH = Pattern.compile("/api/v1/threeds/[^/]+/notification");
 
     private final Map<String, byte[]> keysByClient;
 
@@ -44,6 +51,12 @@ public class ApiKeyFilter extends OncePerRequestFilter {
             throw new IllegalStateException("No authenticated client on this request");
         }
         return (String) client;
+    }
+
+    @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        String path = request.getRequestURI().substring(request.getContextPath().length());
+        return "POST".equals(request.getMethod()) && PUBLIC_PATH.matcher(path).matches();
     }
 
     @Override

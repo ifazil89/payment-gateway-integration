@@ -12,6 +12,7 @@ Content-Type: application/json
 {
   "merchantOrderId": "SO-1001",
   "cardType": "CARD",
+  "returnUrl": "http://localhost:3000/checkout/done?order=SO-1001",
   "card": { "pan": "<sandbox-test-card>", "expiry": "2030-12", "cvv": "123", "cardholderName": "Jane Doe" },
   "amount": { "value": 250.00, "currency": "AED" },
   "billingInfo": { "firstName": "Jane", "lastName": "Doe", "email": "jane@example.com",
@@ -52,3 +53,14 @@ Content-Type: application/json
   "billingInfo": { "firstName": "Jane", "lastName": "Doe", "email": "jane@example.com" },
   "deviceInfo": { "ip": "203.0.113.10", "userAgent": "Mozilla/5.0", "acceptHeader": "text/html", "language": "en" }
 }
+
+### 4. Current status (paste a paymentId from a response above)
+GET {{base}}/api/v1/payments/<paymentId>
+X-Api-Key: {{apiKey}}
+
+### 5. 3DS challenge result, as the card issuer's ACS makes the shopper's browser post it (no API key).
+### Normally sent by the browser after the challenge; here only to see the redirect / result page.
+POST {{base}}/api/v1/threeds/<paymentId>/notification
+Content-Type: application/x-www-form-urlencoded
+
+cres=<base64-cres-from-the-acs>

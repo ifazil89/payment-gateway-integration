@@ -10,7 +10,7 @@ import java.util.Locale;
 public enum PaymentState {
 
     CREATED,              // saved, N-Genius not answered yet
-    AWAITING_3DS,         // N-Genius wants 3DS, authentication not finished
+    AWAITING_3DS,         // N-Genius wants 3DS, or is finishing it after the shopper's challenge
     CHALLENGE_REQUIRED,   // shopper must complete a 3DS challenge
     AUTHORISED,           // money reserved, ready to capture
     DECLINED,

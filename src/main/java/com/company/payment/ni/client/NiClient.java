@@ -2,6 +2,7 @@ package com.company.payment.ni.client;
 
 import com.company.payment.ni.config.NiProperties;
 import com.company.payment.ni.dto.NiCardRequest;
+import com.company.payment.ni.dto.NiChallengeResponseRequest;
 import com.company.payment.ni.dto.NiOrderRequest;
 import com.company.payment.ni.dto.NiOrderResponse;
 import com.company.payment.ni.dto.NiPaymentResponse;
@@ -80,6 +81,11 @@ public class NiClient {
     /** EMV 3DS 2.x authentication: POST to the payment's "cnp:3ds2-authentication" link. */
     public NiPaymentResponse authenticateThreeDs(String authenticationLink, NiThreeDsRequest request) {
         return post("3DS authentication", authenticationLink, request);
+    }
+
+    /** After a 3DS challenge: POST the issuer's CRes to the payment's "cnp:3ds2-challenge-response" link. */
+    public NiPaymentResponse completeChallenge(String challengeResponseLink, NiChallengeResponseRequest request) {
+        return post("3DS challenge response", challengeResponseLink, request);
     }
 
     // ------------------------------------------------------------------ helpers

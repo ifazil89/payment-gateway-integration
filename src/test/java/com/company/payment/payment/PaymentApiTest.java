@@ -3,6 +3,7 @@ package com.company.payment.payment;
 import com.company.payment.ni.client.NiClient;
 import com.company.payment.ni.exception.NiException;
 import com.company.payment.ni.dto.NiCardRequest;
+import com.company.payment.ni.dto.NiChallengeResponseRequest;
 import com.company.payment.ni.dto.NiOrderRequest;
 import com.company.payment.ni.dto.NiOrderResponse;
 import com.company.payment.ni.dto.NiPaymentResponse;
@@ -34,22 +35,26 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * POST /api/v1/payments end to end (controller, validation, service, MapStruct, H2, Flyway)
- * with only NiClient mocked. Runs without N-Genius credentials.
+ * POST /api/v1/payments, GET /api/v1/payments/{id} and the 3DS challenge notification end to end
+ * (controllers, validation, services, MapStruct, H2, Flyway) with only NiClient mocked. Runs without N-Genius credentials.
  * Also checks the logging promises: correlation id round-trip, and no card number / CVV in any log line.
  */
-@SpringBootTest(properties = {"ni.api-key=test", "ni.outlet-id=outlet-1"})
+@SpringBootTest(properties = {"ni.api-key=test", "ni.outlet-id=outlet-1",
+        "app.security.api-keys=local-client:sandbox-key,other-client:other-client-key"})
 @AutoConfigureMockMvc
 @ExtendWith(OutputCaptureExtension.class)
 class PaymentApiTest {
 
     private static final String API_KEY = "sandbox-key";     // application-sandbox.yml: local-client:sandbox-key
+    private static final String RETURN_URL = "http://localhost:3000/checkout/done?order=SO-1001";   // sandbox return-urls
     private static final String NI = "https://api-gateway.sandbox.ngenius-payments.com/transactions/outlets/outlet-1/orders/";
 
     @Autowired
@@ -109,12 +114,13 @@ class PaymentApiTest {
         when(niClient.payWithCard(any(), any())).thenReturn(niPayment("AWAIT_3DS",
                 Map.of("cnp:3ds2-authentication", Map.of("href", NI + "order-3/payments/pay-1/card/3ds2/authentications")),
                 null));
-        when(niClient.authenticateThreeDs(any(), any())).thenReturn(niPayment("AWAIT_3DS", Map.of(),
-                new NiThreeDs("C", "https://acs.bank.example/challenge", "Y3JlcQ==", null, "2.2.0")));
+        when(niClient.authenticateThreeDs(any(), any())).thenReturn(challenge("order-3"));
 
         String body = mvc.perform(payment("key-3", cardRequest("250.00")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("CHALLENGE_REQUIRED"))
+                .andExpect(jsonPath("$.threeDs.acsUrl").value("https://acs.bank.example/challenge"))
+                .andExpect(jsonPath("$.threeDs.creq").value("Y3JlcQ=="))
                 .andReturn().getResponse().getContentAsString();
 
         // 3DS was started with the device info and our notification URL
@@ -138,7 +144,112 @@ class PaymentApiTest {
 
         mvc.perform(payment("key-4", cardRequest("250.00")))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("AUTHORISED"));
+                .andExpect(jsonPath("$.status").value("AUTHORISED"))
+                .andExpect(jsonPath("$.threeDs").doesNotExist());
+    }
+
+    // ------------------------------------------------------------------ 3DS challenge result and status
+
+    @Test
+    void challengeResultAuthorisesAndSendsTheShopperBack() throws Exception {
+        String paymentId = challengedPayment("key-20", "order-20", RETURN_URL);
+        when(niClient.completeChallenge(any(), any())).thenReturn(niPayment("AUTHORISED", Map.of(),
+                new NiThreeDs("Y", null, null, "05", "2.2.0")));
+
+        // posted by the shopper's browser: no API key
+        mvc.perform(notification(paymentId))
+                .andExpect(status().isSeeOther())
+                .andExpect(header().string("Location", RETURN_URL + "&paymentId=" + paymentId + "&status=AUTHORISED"));
+
+        ArgumentCaptor<NiChallengeResponseRequest> cres = ArgumentCaptor.forClass(NiChallengeResponseRequest.class);
+        verify(niClient).completeChallenge(eq(NI + "order-20/payments/pay-1/card/3ds2/challenge-response"), cres.capture());
+        assertThat(cres.getValue().base64EncodedCRes()).isEqualTo("Y3Jlcw==");
+
+        // the client reads the trusted final status
+        mvc.perform(get("/api/v1/payments/{id}", paymentId).header("X-Api-Key", API_KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("AUTHORISED"))
+                .andExpect(jsonPath("$.threeDs").doesNotExist());
+    }
+
+    @Test
+    void repeatedNotificationDoesNotCallNgeniusAgain() throws Exception {
+        String paymentId = challengedPayment("key-21", "order-21", RETURN_URL);
+        when(niClient.completeChallenge(any(), any())).thenReturn(niPayment("AUTHORISED", Map.of(), null));
+
+        mvc.perform(notification(paymentId)).andExpect(status().isSeeOther());
+        mvc.perform(notification(paymentId))
+                .andExpect(status().isSeeOther())
+                .andExpect(header().string("Location", org.hamcrest.Matchers.endsWith("&status=AUTHORISED")));
+        verify(niClient, times(1)).completeChallenge(any(), any());
+    }
+
+    @Test
+    void withoutReturnUrlTheShopperSeesAResultPage() throws Exception {
+        String paymentId = challengedPayment("key-22", "order-22", null);
+        when(niClient.completeChallenge(any(), any())).thenReturn(niPayment("DECLINED", Map.of(), null));
+
+        mvc.perform(notification(paymentId))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Type", org.hamcrest.Matchers.startsWith("text/html")))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("Payment declined.")));
+    }
+
+    @Test
+    void ngeniusTimeoutOnChallengeResultIsPending() throws Exception {
+        String paymentId = challengedPayment("key-23", "order-23", RETURN_URL);
+        when(niClient.completeChallenge(any(), any())).thenThrow(new ResourceAccessException("Read timed out"));
+
+        mvc.perform(notification(paymentId))
+                .andExpect(status().isSeeOther())
+                .andExpect(header().string("Location", org.hamcrest.Matchers.endsWith("&status=PENDING")));
+        mvc.perform(get("/api/v1/payments/{id}", paymentId).header("X-Api-Key", API_KEY))
+                .andExpect(jsonPath("$.status").value("PENDING"));
+        // outcome unknown: a repeated notification must not send the CRes again
+        mvc.perform(notification(paymentId)).andExpect(status().isSeeOther());
+        verify(niClient, times(1)).completeChallenge(any(), any());
+    }
+
+    @Test
+    void challengeResultRefusedByNgeniusIsFailed() throws Exception {
+        String paymentId = challengedPayment("key-24", "order-24", RETURN_URL);
+        when(niClient.completeChallenge(any(), any())).thenThrow(new NiException(400, "/challenge-response", "{}"));
+
+        mvc.perform(notification(paymentId))
+                .andExpect(header().string("Location", org.hamcrest.Matchers.endsWith("&status=FAILED")));
+        mvc.perform(get("/api/v1/payments/{id}", paymentId).header("X-Api-Key", API_KEY))
+                .andExpect(jsonPath("$.failureReason").value("3DS challenge rejected by N-Genius (HTTP 400)"));
+    }
+
+    @Test
+    void notificationForUnknownPaymentIsNotFound() throws Exception {
+        mvc.perform(notification("no-such-payment"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("PAYMENT_NOT_FOUND"));
+    }
+
+    @Test
+    void returnUrlMustBeAllowedForTheClient() throws Exception {
+        mvc.perform(payment("key-25", withReturnUrl(cardRequest("250.00"), "https://evil.example.com/")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.errors[0].field").value("returnUrl"));
+        verify(niClient, never()).createOrder(any());
+    }
+
+    @Test
+    void anotherClientsPaymentIsNotFound() throws Exception {
+        givenOrder("order-26");
+        when(niClient.payWithCard(any(), any())).thenReturn(niPayment("AUTHORISED", Map.of(), null));
+        String body = mvc.perform(payment("key-26", cardRequest("250.00")))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String paymentId = com.jayway.jsonpath.JsonPath.read(body, "$.paymentId");
+
+        mvc.perform(get("/api/v1/payments/{id}", paymentId).header("X-Api-Key", "other-client-key"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("PAYMENT_NOT_FOUND"));
+        mvc.perform(get("/api/v1/payments/{id}", paymentId))
+                .andExpect(status().isUnauthorized());
     }
 
     // ------------------------------------------------------------------ N-Genius problems
@@ -265,6 +376,39 @@ class PaymentApiTest {
                 "payment:saved-card", Map.of("href", NI + orderRef + "/payments/pay-1/saved-card")));
         when(niClient.createOrder(any()))
                 .thenReturn(new NiOrderResponse(orderRef, null, new NiOrderResponse.Embedded(List.of(started))));
+    }
+
+    /** A payment that needed a 3DS challenge; returns its paymentId. */
+    private String challengedPayment(String idempotencyKey, String orderRef, String returnUrl) throws Exception {
+        givenOrder(orderRef);
+        when(niClient.payWithCard(eq(NI + orderRef + "/payments/pay-1/card"), any())).thenReturn(niPayment("AWAIT_3DS",
+                Map.of("cnp:3ds2-authentication", Map.of("href", NI + orderRef + "/payments/pay-1/card/3ds2/authentications")),
+                null));
+        when(niClient.authenticateThreeDs(eq(NI + orderRef + "/payments/pay-1/card/3ds2/authentications"), any()))
+                .thenReturn(challenge(orderRef));
+        String request = returnUrl == null ? cardRequest("250.00") : withReturnUrl(cardRequest("250.00"), returnUrl);
+        String body = mvc.perform(payment(idempotencyKey, request))
+                .andExpect(jsonPath("$.status").value("CHALLENGE_REQUIRED"))
+                .andReturn().getResponse().getContentAsString();
+        return com.jayway.jsonpath.JsonPath.read(body, "$.paymentId");
+    }
+
+    private static NiPaymentResponse challenge(String orderRef) {
+        return niPayment("AWAIT_3DS",
+                Map.of("cnp:3ds2-challenge-response",
+                        Map.of("href", NI + orderRef + "/payments/pay-1/card/3ds2/challenge-response")),
+                new NiThreeDs("C", "https://acs.bank.example/challenge", "Y3JlcQ==", null, "2.2.0"));
+    }
+
+    /** What the card issuer's ACS makes the shopper's browser post (form, no API key). */
+    private static MockHttpServletRequestBuilder notification(String paymentId) {
+        return post("/api/v1/threeds/{paymentId}/notification", paymentId)
+                .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                .param("cres", "Y3Jlcw==");
+    }
+
+    private static String withReturnUrl(String request, String returnUrl) {
+        return request.replaceFirst("\"merchantOrderId\"", "\"returnUrl\": \"" + returnUrl + "\", \"merchantOrderId\"");
     }
 
     private static NiPaymentResponse niPayment(String state, Map<String, Object> links, NiThreeDs threeDs) {

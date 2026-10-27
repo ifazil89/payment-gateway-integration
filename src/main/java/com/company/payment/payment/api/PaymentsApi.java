@@ -7,6 +7,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -22,6 +23,7 @@ import org.springframework.web.bind.annotation.RequestMethod;
 public interface PaymentsApi {
 
     String PATH_CREATE_PAYMENT = "/api/v1/payments";
+    String PATH_GET_PAYMENT = "/api/v1/payments/{paymentId}";
 
     /**
      * POST /api/v1/payments: authorise a payment with a new card or a saved card token.
@@ -29,7 +31,7 @@ public interface PaymentsApi {
      *   1. Creates an AUTH order at N-Genius.
      *   2. Sends the card (CARD) or the saved N-Genius token (CARD_ON_FILE).
      *   3. If N-Genius asks for 3DS, starts EMV 3DS 2.x with deviceInfo:
-     *      frictionless -> AUTHORISED, challenge -> CHALLENGE_REQUIRED.
+     *      frictionless -> AUTHORISED, challenge -> CHALLENGE_REQUIRED (with threeDs: acsUrl + creq).
      *
      * The same Idempotency-Key returns the same payment: the card is never charged twice.
      *
@@ -49,4 +51,16 @@ public interface PaymentsApi {
     ResponseEntity<PaymentResponse> createPayment(
             @NotNull @Size(min = 1, max = 100) @RequestHeader(value = "Idempotency-Key", required = true) String idempotencyKey,
             @Valid @RequestBody PaymentRequest paymentRequest);
+
+    /**
+     * GET /api/v1/payments/{paymentId}: the current status of one of the client's own payments, e.g. after
+     * the shopper came back from a 3DS challenge (trust this, not the status in the redirect URL).
+     *
+     * @return 200 PaymentResponse; 404 PAYMENT_NOT_FOUND (unknown id, or another client's payment)
+     */
+    @RequestMapping(
+            method = RequestMethod.GET,
+            value = PATH_GET_PAYMENT,
+            produces = {"application/json"})
+    ResponseEntity<PaymentResponse> getPayment(@PathVariable("paymentId") String paymentId);
 }

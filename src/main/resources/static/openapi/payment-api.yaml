@@ -12,9 +12,21 @@ info:
     | status | next |
     |---|---|
     | `AUTHORISED` | capture API |
-    | `CHALLENGE_REQUIRED` | 3DS API |
-    | `PENDING` | status API, or retry with the **same** `Idempotency-Key` |
+    | `CHALLENGE_REQUIRED` | 3DS challenge in the shopper's browser (see below), then `GET /api/v1/payments/{paymentId}` |
+    | `PENDING` | `GET /api/v1/payments/{paymentId}` later, or retry with the **same** `Idempotency-Key` |
     | `DECLINED` / `FAILED` | stop, or a new attempt with a new `Idempotency-Key` |
+
+    **3DS challenge** (`CHALLENGE_REQUIRED`):
+    1. In the shopper's browser, POST a form with the field `creq` = `threeDs.creq` to `threeDs.acsUrl`
+       (top-level page or an iframe). The card issuer shows its challenge (e.g. an OTP).
+    2. The issuer makes the browser post the result to this service
+       (`POST /api/v1/threeds/{paymentId}/notification`); we finish the payment with N-Genius.
+    3. The browser is redirected (303) to your `returnUrl` + `paymentId` and `status` query parameters,
+       or sees a short "you can close this window" page if you sent no `returnUrl`.
+    4. Read the final status with `GET /api/v1/payments/{paymentId}`. Don't trust `status` in the
+       redirect URL alone: the shopper can change it.
+
+    `returnUrl` must start with one of the return URLs configured for your client.
 
     **Tracing:** send `X-Correlation-Id` (optional). Every response returns `X-Correlation-Id` and `X-Trace-Id`;
     quote them when reporting a problem.
@@ -28,6 +40,8 @@ security:
 tags:
   - name: Payments
     description: Authorise card payments
+  - name: 3DS
+    description: Called by the shopper's browser during a 3DS challenge (not by your backend)
 
 paths:
   /api/v1/payments:
@@ -39,7 +53,7 @@ paths:
         1. Creates an **AUTH** order at N-Genius.
         2. Sends the card (`CARD`) or the saved N-Genius token (`CARD_ON_FILE`).
         3. If N-Genius asks for 3DS, starts EMV 3DS 2.x with `deviceInfo`:
-           frictionless -> `AUTHORISED`, challenge -> `CHALLENGE_REQUIRED`.
+           frictionless -> `AUTHORISED`, challenge -> `CHALLENGE_REQUIRED` (with `threeDs`).
 
         The same `Idempotency-Key` returns the same payment: the card is never charged twice.
       parameters:
@@ -56,6 +70,7 @@ paths:
                 value:
                   merchantOrderId: SO-1001
                   cardType: CARD
+                  returnUrl: https://shop.example.com/checkout/done?order=SO-1001
                   card: { pan: '4111111111111111', expiry: '2030-12', cvv: '123', cardholderName: Jane Doe }
                   amount: { value: 250.00, currency: AED }
                   billingInfo: { firstName: Jane, lastName: Doe, email: jane@example.com,
@@ -94,6 +109,75 @@ paths:
         '504':
           $ref: '#/components/responses/GatewayTimeout'
 
+  /api/v1/payments/{paymentId}:
+    get:
+      tags: [Payments]
+      operationId: getPayment
+      summary: Current status of a payment
+      description: |
+        The trusted status, e.g. after the shopper came back from a 3DS challenge or after `PENDING`.
+        Only your own payments: another client's payment id is `404`.
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+      responses:
+        '200':
+          description: The payment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/threeds/{paymentId}/notification:
+    post:
+      tags: [3DS]
+      operationId: threeDsNotification
+      summary: 3DS challenge result (posted by the shopper's browser)
+      description: |
+        The `notificationURL` given to the card issuer. The issuer's ACS makes the shopper's browser post
+        the challenge result (`cres`) here after the challenge. **Not called by your backend; no API key.**
+
+        The CRes is sent to N-Genius, then the browser is sent to the payment's `returnUrl`.
+        If N-Genius does not answer, the status is `PENDING`: read it later with `GET /api/v1/payments/{paymentId}`.
+        A repeated post does not reach N-Genius again; it gets the current status.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [cres]
+              properties:
+                cres:
+                  type: string
+                  description: Base64 challenge response from the card issuer's ACS
+      responses:
+        '303':
+          description: Redirect to `returnUrl` with `paymentId` and `status` (`AUTHORISED`, `DECLINED`, `FAILED` or `PENDING`)
+          headers:
+            Location:
+              schema:
+                type: string
+              example: https://shop.example.com/checkout/done?order=SO-1001&paymentId=7f3c2a9e-1b4d-4e8f-9a2b-3c4d5e6f7a8b&status=AUTHORISED
+        '200':
+          description: No `returnUrl` on the payment - a short HTML page ("Payment authorised. You can close this window.")
+          content:
+            text/html:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
 components:
   securitySchemes:
     apiKey:
@@ -103,6 +187,14 @@ components:
       description: Per-client API key
 
   parameters:
+    PaymentId:
+      name: paymentId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: The `paymentId` from the payment response
+      example: 7f3c2a9e-1b4d-4e8f-9a2b-3c4d5e6f7a8b
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -167,6 +259,17 @@ components:
           example:
             code: UNAUTHORIZED
             message: Missing or invalid X-Api-Key
+            correlationId: demo-1
+            traceId: 4bf92f3577b34da6a3ce929d0e0e4736
+            timestamp: '2026-10-24T07:00:01.412Z'
+    NotFound:
+      description: PAYMENT_NOT_FOUND - unknown payment id (or another client's payment)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            code: PAYMENT_NOT_FOUND
+            message: No payment 7f3c2a9e-1b4d-4e8f-9a2b-3c4d5e6f7a8b
             correlationId: demo-1
             traceId: 4bf92f3577b34da6a3ce929d0e0e4736
             timestamp: '2026-10-24T07:00:01.412Z'
@@ -258,6 +361,14 @@ components:
           $ref: '#/components/schemas/BillingInfo'
         deviceInfo:
           $ref: '#/components/schemas/DeviceInfo'
+        returnUrl:
+          type: string
+          maxLength: 2048
+          description: |
+            Where the shopper's browser goes after a 3DS challenge (`paymentId` and `status` are added as
+            query parameters). Must start with one of the return URLs configured for your client; otherwise
+            `400 VALIDATION_ERROR` on `returnUrl`. Optional: without it the shopper sees a short result page.
+          example: https://shop.example.com/checkout/done?order=SO-1001
 
     CardType:
       type: string
@@ -367,6 +478,29 @@ components:
         createdAt:
           type: string
           format: date-time
+        threeDs:
+          $ref: '#/components/schemas/ThreeDsChallenge'
+
+    ThreeDsChallenge:
+      type: object
+      description: |
+        Only when `status` is `CHALLENGE_REQUIRED`. In the shopper's browser, POST a form with the field
+        `creq` (this `creq` value) to `acsUrl`:
+
+        ```html
+        <form method="post" action="{acsUrl}"><input type="hidden" name="creq" value="{creq}"></form>
+        <script>document.forms[0].submit()</script>
+        ```
+      required: [acsUrl, creq]
+      properties:
+        acsUrl:
+          type: string
+          description: The card issuer's challenge page (ACS)
+          example: https://acs.bank.example/challenge
+        creq:
+          type: string
+          description: Base64 challenge request, posted as the form field `creq`
+          example: eyJ0aHJlZURTU2VydmVyVHJhbnNJRCI6Ii4uLiJ9
 
     PaymentStatus:
       type: string

@@ -24,4 +24,9 @@ public class PaymentController implements PaymentsApi {
         return ResponseEntity.ok(
                 paymentService.createPayment(ApiKeyFilter.currentClientId(), idempotencyKey, paymentRequest));
     }
+
+    @Override
+    public ResponseEntity<PaymentResponse> getPayment(String paymentId) {
+        return ResponseEntity.ok(paymentService.getPayment(ApiKeyFilter.currentClientId(), paymentId));
+    }
 }

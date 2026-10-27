@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Payment API (`POST /api/v1/payments`) for downstream clients, processed by N-Genius (Network International): two-stage AUTH with a card or card-on-file token, including 3DS. Spring Boot 4.1 · Java 21 · Maven · OpenAPI docs (Swagger UI) · Lombok · MapStruct · Flyway · H2 (sandbox) / PostgreSQL (prod). `README.md` is detailed and authoritative for API behaviour, error codes, logging fields and configuration.
+Payment API (`POST /api/v1/payments`, `GET /api/v1/payments/{id}`, 3DS challenge notification) for downstream clients, processed by N-Genius (Network International): two-stage AUTH with a card or card-on-file token, including 3DS. Spring Boot 4.1 · Java 21 · Maven · OpenAPI docs (Swagger UI) · Lombok · MapStruct · Flyway · H2 (sandbox) / PostgreSQL (prod). `README.md` is detailed and authoritative for API behaviour, error codes, logging fields and configuration.
 
 ## Commands
 
@@ -30,7 +30,8 @@ Swagger UI: `http://localhost:8085/swagger-ui.html` (API key `sandbox-key`). Exa
 - `payment/` — the feature: `PaymentController` (implements `payment/api/PaymentsApi`) → `PaymentService` → `NiClient` + `PaymentRepository`. Also `PaymentRequestValidator` (cardType vs pan/token, expiry), entity `Payment`/`PaymentState`, and two MapStruct mappers: `PaymentMapper` (API model ↔ entity) and `PaymentNiMapper` (API model → N-Genius DTOs).
 - `ni/` — N-Genius integration, shared by all features. `NiClient` has one method per N-Genius operation and knows only `ni/dto` types (no API models, no entities). `NiAccessTokenProvider` caches the 5-minute access token. `NiConfig` builds the pooled Apache HttpClient-backed `RestClient`.
 - `common/` — cross-cutting: `ApiException` + `GlobalExceptionHandler` (the only place `ErrorResponse` is built), API-key security (`ApiKeyFilter`, `app.security.api-keys` = `client:key,...`), logging, `Amounts` (minor-unit/decimal handling).
-- Planned features (3DS challenge result, capture, status, webhooks, token) follow the same shape: new `threeds/`, `token/` packages, each with its own `api/` interface and `model/` classes, documented in the YAML, reusing `NiClient`.
+- `threeds/` — the 3DS challenge result (see below); uses the `payment/` entity and repository.
+- Planned features (capture, reconciliation, webhooks, token) follow the same shape: a new package each, with its own `api/` interface (and `model/` classes), documented in the YAML, reusing `NiClient`.
 
 ### Payment flow (`PaymentService.createPayment`)
 Validate → idempotency lookup by (clientId, Idempotency-Key) with a request hash (same hash = replay, different = 409 `IDEMPOTENCY_KEY_REUSED`; concurrent insert = 409 `REQUEST_IN_PROGRESS`) → save `CREATED` → N-Genius create AUTH order → pay with card / saved-card → if `AWAIT_3DS`, 3DS authentication (`transStatus C` → `CHALLENGE_REQUIRED`). Key invariants:
@@ -38,6 +39,13 @@ Validate → idempotency lookup by (clientId, Idempotency-Key) with a request ha
 - N-Genius 4xx → payment `FAILED`, HTTP 200. 5xx → 502, timeout → 504; in both cases the payment stays `CREATED`/`AWAITING_3DS` (exposed as `PENDING`) so a retry with the same Idempotency-Key is safe.
 - Next-step N-Genius URLs come from the response `_links` (`NiLinks` relation names); don't build them by hand.
 - `PaymentState` (internal, stored) is distinct from API `PaymentStatus`; `PaymentState.fromNi` maps N-Genius state strings.
+
+### 3DS challenge (`threeds/`, `ThreeDsService.completeChallenge`)
+`CHALLENGE_REQUIRED` responses carry `threeDs{acsUrl, creq}`; the client's page posts `creq` to the ACS. The ACS makes the shopper's browser post `cres` to `POST /api/v1/threeds/{paymentId}/notification` (= `ni.threeds-notification-url`), which sends it to the stored `cnp:3ds2-challenge-response` link and 303-redirects to the payment's `returnUrl` (+ `paymentId`, `status`), or shows a small HTML page. Invariants:
+- That path is exempt from `ApiKeyFilter` (`PUBLIC_PATH`, POST only); keep any other `/api/*` path authenticated.
+- Only `CHALLENGE_REQUIRED` proceeds; the payment is first moved to `AWAITING_3DS` and saved (optimistic lock via `@Version`) so a repeated/concurrent notification never sends the CRes twice.
+- Browser-facing, so N-Genius 5xx/timeout leaves `PENDING` (no 502/504); 4xx → `FAILED`. Clients read the trusted result via `GET /api/v1/payments/{id}` (scoped to the client: other clients' ids are 404).
+- `returnUrl` is validated per client against `app.security.return-urls` (`ReturnUrlAllowlist`: scheme/host/port equal, normalized path prefix) to prevent an open redirect; it is part of the idempotency request hash.
 
 ### Lombok conventions (hand-written classes only)
 - `@Slf4j` for loggers; `@RequiredArgsConstructor` for constructor injection (write the constructor by hand only when it does more than assign fields, e.g. `NiClient`, `PaymentRequestValidator`).

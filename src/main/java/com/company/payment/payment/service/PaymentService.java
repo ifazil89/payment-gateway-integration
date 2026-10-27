@@ -67,7 +67,7 @@ public class PaymentService {
     public PaymentResponse createPayment(String clientId, String idempotencyKey, PaymentRequest request) {
         // 1. Validate
         checkIdempotencyKey(idempotencyKey);
-        validator.validate(request);                                                          // 400
+        validator.validate(clientId, request);                                                // 400
         BigDecimal amount = Amounts.normalize(request.amount().value(), request.amount().currency()); // 422
         String requestHash = requestHash(request);
 
@@ -153,12 +153,20 @@ public class PaymentService {
         NiThreeDs threeDs = result.threeDs();
         String transStatus = threeDs == null ? null : threeDs.transStatus();
         if ("C".equalsIgnoreCase(transStatus)) {
-            payment.challengeRequired(result.state(), transStatus, threeDs.acsUrl(), threeDs.base64EncodedCReq());
+            payment.challengeRequired(result.state(), transStatus, threeDs.acsUrl(), threeDs.base64EncodedCReq(),
+                    link(result, NiLinks.THREEDS_CHALLENGE_RESPONSE));
             log.info("3DS challenge required: transStatus {}, ACS {}", transStatus, threeDs.acsUrl());
         } else {
             payment.threeDsAuthenticated(result.state(), transStatus);
             log.info("3DS frictionless: transStatus {}, N-Genius state {}", transStatus, result.state());
         }
+    }
+
+    /** GET /api/v1/payments/{paymentId}: the stored status. Another client's payment is reported as not found. */
+    public PaymentResponse getPayment(String clientId, String paymentId) {
+        return repository.findByIdAndClientId(paymentId, clientId)
+                .map(paymentMapper::toResponse)
+                .orElseThrow(() -> ApiException.notFound("PAYMENT_NOT_FOUND", "No payment " + paymentId));
     }
 
     /** Same Idempotency-Key: same request -> same answer; different request -> 409. */
@@ -205,7 +213,7 @@ public class PaymentService {
                 : sha256(r.card().token() == null ? "" : r.card().token());
         String value = String.join("|", r.merchantOrderId(), r.cardType().getValue(),
                 r.amount().value().stripTrailingZeros().toPlainString(), r.amount().currency(),
-                r.billingInfo().email(), card);
+                r.billingInfo().email(), card) + (r.returnUrl() == null ? "" : "|" + r.returnUrl());
         return sha256(value);
     }
 

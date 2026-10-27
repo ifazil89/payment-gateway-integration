@@ -4,6 +4,7 @@ import com.company.payment.payment.model.Amount;
 import com.company.payment.payment.model.PaymentRequest;
 import com.company.payment.payment.model.PaymentResponse;
 import com.company.payment.payment.model.PaymentStatus;
+import com.company.payment.payment.model.ThreeDsChallenge;
 import com.company.payment.common.util.Amounts;
 import com.company.payment.payment.entity.Payment;
 import com.company.payment.payment.entity.PaymentState;
@@ -44,7 +45,15 @@ public interface PaymentMapper {
     @Mapping(target = "status", expression = "java(toStatus(payment.getState()))")
     @Mapping(target = "amount", expression = "java(toAmount(payment))")
     @Mapping(target = "orderReference", source = "niOrderReference")
+    @Mapping(target = "threeDs", expression = "java(toChallenge(payment))")
     PaymentResponse toResponse(Payment payment);
+
+    /** Only while the shopper still has to complete the challenge. */
+    default ThreeDsChallenge toChallenge(Payment payment) {
+        return payment.getState() == PaymentState.CHALLENGE_REQUIRED
+                ? new ThreeDsChallenge(payment.getThreeDsAcsUrl(), payment.getThreeDsCreq())
+                : null;
+    }
 
     /**
      * Internal state -> API status. CREATED and AWAITING_3DS are shown as PENDING

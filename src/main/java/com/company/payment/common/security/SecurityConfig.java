@@ -9,7 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/** Registers ApiKeyFilter for /api/** (after CorrelationIdFilter and HttpLoggingFilter). */
+/** Registers ApiKeyFilter for /api/** (after CorrelationIdFilter and HttpLoggingFilter) and the per-client return URLs. */
 @Configuration
 public class SecurityConfig {
 
@@ -19,6 +19,11 @@ public class SecurityConfig {
         bean.addUrlPatterns("/api/*");
         bean.setOrder(ApiKeyFilter.ORDER);
         return bean;
+    }
+
+    @Bean
+    ReturnUrlAllowlist returnUrlAllowlist(@Value("${app.security.return-urls:}") String returnUrls) {
+        return ReturnUrlAllowlist.parse(returnUrls);
     }
 
     /** "client1:key1,client2:key2" -> {client1=key1, client2=key2}. Fails at startup on a bad value. */
