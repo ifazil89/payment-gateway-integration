@@ -34,14 +34,17 @@ Swagger UI: `http://localhost:8085/swagger-ui.html` (API key `sandbox-key`). Exa
 - Planned features (capture, reconciliation, webhooks, token) follow the same shape: a new package each, with its own `api/` interface (and `model/` classes), documented in the YAML, reusing `NiClient`.
 
 ### Payment flow (`PaymentService.createPayment`)
-Validate → idempotency lookup by (clientId, Idempotency-Key) with a request hash (same hash = replay, different = 409 `IDEMPOTENCY_KEY_REUSED`; concurrent insert = 409 `REQUEST_IN_PROGRESS`) → save `CREATED` → N-Genius create AUTH order → pay with card / saved-card → if `AWAIT_3DS`, 3DS authentication (`transStatus C` → `CHALLENGE_REQUIRED`). Key invariants:
+Validate → idempotency lookup by (clientId, Idempotency-Key) with a request hash (same hash = replay, different = 409 `IDEMPOTENCY_KEY_REUSED`; concurrent insert = 409 `REQUEST_IN_PROGRESS`) → save `CREATED` → N-Genius create AUTH order → pay with card / saved-card → if `AWAIT_3DS`, 3DS authentication (`transStatus C`, or still `AWAIT_3DS` with acsURL + CReq → `CHALLENGE_REQUIRED`). Key invariants:
 - No DB transaction spans N-Genius calls; each step is saved separately.
 - N-Genius 4xx → payment `FAILED`, HTTP 200. 5xx → 502, timeout → 504; in both cases the payment stays `CREATED`/`AWAITING_3DS` (exposed as `PENDING`) so a retry with the same Idempotency-Key is safe.
 - Next-step N-Genius URLs come from the response `_links` (`NiLinks` relation names); don't build them by hand.
 - `PaymentState` (internal, stored) is distinct from API `PaymentStatus`; `PaymentState.fromNi` maps N-Genius state strings.
 
-### 3DS challenge (`threeds/`, `ThreeDsService.completeChallenge`)
-`CHALLENGE_REQUIRED` responses carry `threeDs{acsUrl, creq}`; the client's page posts `creq` to the ACS. The ACS makes the shopper's browser post `cres` to `POST /api/v1/threeds/{paymentId}/notification` (= `ni.threeds-notification-url`), which sends it to the stored `cnp:3ds2-challenge-response` link and 303-redirects to the payment's `returnUrl` (+ `paymentId`, `status`), or shows a small HTML page. Invariants:
+### 3DS challenge (`threeds/`, `ThreeDsService`)
+The `notificationURL` sent to N-Genius is the payment's `returnUrl` (the client's), else `ni.threeds-notification-url`.
+- With `returnUrl` (e.g. mobile WebView): `GET /api/v1/threeds/{paymentId}/challenge` (API key) posts form `creq` to the stored `threeDSMethodURL` (fallback `acsURL`) via `NiClient.challengePage` (no bearer token, https only) and returns the HTML with an injected `<base href>`. The ACS posts `cres` to the client's `returnUrl`; the client sends it to `POST /api/v1/threeds/{paymentId}/challenge-response` `{cres}` (API key, client-scoped), which answers `PaymentResponse`.
+- Without `returnUrl`: `CHALLENGE_REQUIRED` responses carry `threeDs{acsUrl, creq}`; the client's page posts `creq` to the ACS, which makes the browser post `cres` to `POST /api/v1/threeds/{paymentId}/notification`, answered with a small HTML page (or 303 to `returnUrl` + `paymentId`, `status`).
+- Both CRes paths share `ThreeDsService.complete` (send to the stored `cnp:3ds2-challenge-response` link). Invariants:
 - That path is exempt from `ApiKeyFilter` (`PUBLIC_PATH`, POST only); keep any other `/api/*` path authenticated.
 - Only `CHALLENGE_REQUIRED` proceeds; the payment is first moved to `AWAITING_3DS` and saved (optimistic lock via `@Version`) so a repeated/concurrent notification never sends the CRes twice.
 - Browser-facing, so N-Genius 5xx/timeout leaves `PENDING` (no 502/504); 4xx → `FAILED`. Clients read the trusted result via `GET /api/v1/payments/{id}` (scoped to the client: other clients' ids are 404).
@@ -68,4 +71,4 @@ Validate → idempotency lookup by (clientId, Idempotency-Key) with a request ha
 - `PaymentMappersTest`, `SensitiveDataMaskerTest`: unit tests.
 
 ## Open items to verify against the N-Genius sandbox
-Link names `payment:card`, `payment:saved-card`, `cnp:3ds2-authentication`; whether `merchantOrderReference` is accepted; exact N-Genius state names in `PaymentState.fromNi`.
+Link names `payment:card`, `payment:saved-card` (the 3DS links and request bodies are confirmed by the N-Genius EMV 3DS guide); whether `merchantOrderReference` is accepted; exact N-Genius state names in `PaymentState.fromNi`.

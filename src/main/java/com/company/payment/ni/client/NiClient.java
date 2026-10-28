@@ -13,6 +13,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClient;
 
 import java.net.URI;
@@ -86,6 +88,27 @@ public class NiClient {
     /** After a 3DS challenge: POST the issuer's CRes to the payment's "cnp:3ds2-challenge-response" link. */
     public NiPaymentResponse completeChallenge(String challengeResponseLink, NiChallengeResponseRequest request) {
         return post("3DS challenge response", challengeResponseLink, request);
+    }
+
+    /**
+     * 3DS challenge page: POST the CReq as form field "creq" to the URL from the "3ds2" block
+     * (threeDSMethodURL) and return the HTML the shopper has to complete.
+     * That host is the 3DS server / card issuer, not the N-Genius API: no access token is sent, only https is allowed.
+     */
+    public String challengePage(String url, String creq) {
+        URI uri = URI.create(url);
+        if (!"https".equalsIgnoreCase(uri.getScheme())) {
+            throw new IllegalStateException("Refusing to post the CReq to a non-https URL: " + uri.getHost());
+        }
+        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+        form.add("creq", creq);
+        return call("3DS challenge page", () -> niRestClient.post()
+                .uri(uri)
+                .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                .accept(MediaType.TEXT_HTML, MediaType.ALL)
+                .body(form)
+                .retrieve()
+                .body(String.class));
     }
 
     // ------------------------------------------------------------------ helpers

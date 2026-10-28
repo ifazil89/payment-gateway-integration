@@ -143,23 +143,48 @@ public class PaymentService {
         }
     }
 
-    /** Step 6: EMV 3DS 2.x authentication. The card issuer decides frictionless or challenge. */
+    /**
+     * Step 6: EMV 3DS 2.x authentication. The card issuer decides frictionless or challenge.
+     * After a challenge the ACS posts the CRes to the notificationURL: the client's returnUrl (the client then
+     * sends it to POST /api/v1/threeds/{paymentId}/challenge-response), or without one, our notification endpoint.
+     */
     private void authenticateThreeDs(Payment payment, NiPaymentResponse afterCard, PaymentRequest request) {
-        String notificationUrl = niProperties.threedsNotificationUrl(payment.getId());
+        String notificationUrl = payment.getReturnUrl() != null
+                ? payment.getReturnUrl()
+                : niProperties.threedsNotificationUrl(payment.getId());
         NiPaymentResponse result = niClient.authenticateThreeDs(
                 link(afterCard, NiLinks.THREEDS_AUTHENTICATION),
                 niMapper.toThreeDsRequest(request.deviceInfo(), notificationUrl));
 
         NiThreeDs threeDs = result.threeDs();
         String transStatus = threeDs == null ? null : threeDs.transStatus();
-        if ("C".equalsIgnoreCase(transStatus)) {
+        if (challengeRequired(result)) {
             payment.challengeRequired(result.state(), transStatus, threeDs.acsUrl(), threeDs.base64EncodedCReq(),
-                    link(result, NiLinks.THREEDS_CHALLENGE_RESPONSE));
+                    threeDs.threeDsMethodUrl(), link(result, NiLinks.THREEDS_CHALLENGE_RESPONSE));
             log.info("3DS challenge required: transStatus {}, ACS {}", transStatus, threeDs.acsUrl());
         } else {
             payment.threeDsAuthenticated(result.state(), transStatus);
-            log.info("3DS frictionless: transStatus {}, N-Genius state {}", transStatus, result.state());
+            if (payment.getState() == PaymentState.AWAITING_3DS) {
+                log.warn("3DS: N-Genius still AWAIT_3DS without challenge data (transStatus {}), payment stays pending",
+                        transStatus);
+            } else {
+                log.info("3DS frictionless: transStatus {}, N-Genius state {}", transStatus, result.state());
+            }
         }
+    }
+
+    /**
+     * N-Genius EMV 3DS guide: transStatus C = challenge. Any other transStatus is frictionless, unless the payment
+     * is still AWAIT_3DS: then the challenge step is required as well (if N-Genius gave acsURL and the CReq).
+     */
+    private static boolean challengeRequired(NiPaymentResponse result) {
+        NiThreeDs threeDs = result.threeDs();
+        if (threeDs == null) {
+            return false;
+        }
+        return "C".equalsIgnoreCase(threeDs.transStatus())
+                || PaymentState.fromNi(result.state()) == PaymentState.AWAITING_3DS
+                        && threeDs.acsUrl() != null && threeDs.base64EncodedCReq() != null;
     }
 
     /** GET /api/v1/payments/{paymentId}: the stored status. Another client's payment is reported as not found. */

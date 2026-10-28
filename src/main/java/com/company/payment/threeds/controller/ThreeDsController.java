@@ -1,6 +1,9 @@
 package com.company.payment.threeds.controller;
 
+import com.company.payment.common.security.ApiKeyFilter;
+import com.company.payment.payment.model.PaymentResponse;
 import com.company.payment.threeds.api.ThreeDsApi;
+import com.company.payment.threeds.model.ChallengeResponseRequest;
 import com.company.payment.threeds.service.ThreeDsResult;
 import com.company.payment.threeds.service.ThreeDsService;
 import lombok.RequiredArgsConstructor;
@@ -13,7 +16,10 @@ import org.springframework.web.util.UriComponentsBuilder;
 import java.net.URI;
 import java.util.Locale;
 
-/** Implements ThreeDsApi (threeds/api): hands the CRes to ThreeDsService, then answers the shopper's browser. */
+/**
+ * Implements ThreeDsApi (threeds/api): the challenge page and the CRes from a client (API key), and the CRes
+ * posted by the shopper's browser (notification, answered with a redirect or a small page).
+ */
 @RestController
 @RequiredArgsConstructor
 public class ThreeDsController implements ThreeDsApi {
@@ -25,6 +31,18 @@ public class ThreeDsController implements ThreeDsApi {
             """;
 
     private final ThreeDsService threeDsService;
+
+    @Override
+    public ResponseEntity<String> challengePage(String paymentId) {
+        return ResponseEntity.ok().contentType(MediaType.TEXT_HTML)
+                .body(threeDsService.challengePage(ApiKeyFilter.currentClientId(), paymentId));
+    }
+
+    @Override
+    public ResponseEntity<PaymentResponse> challengeResponse(String paymentId, ChallengeResponseRequest request) {
+        return ResponseEntity.ok(
+                threeDsService.submitChallengeResponse(ApiKeyFilter.currentClientId(), paymentId, request.cres()));
+    }
 
     @Override
     public ResponseEntity<String> notification(String paymentId, String cres) {

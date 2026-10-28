@@ -58,7 +58,19 @@ Content-Type: application/json
 GET {{base}}/api/v1/payments/<paymentId>
 X-Api-Key: {{apiKey}}
 
-### 5. 3DS challenge result, as the card issuer's ACS makes the shopper's browser post it (no API key).
+### 5. 3DS challenge page (HTML) for a CHALLENGE_REQUIRED payment, e.g. to show in a WebView
+GET {{base}}/api/v1/threeds/<paymentId>/challenge
+X-Api-Key: {{apiKey}}
+
+### 6. Send the cres the ACS posted to your returnUrl
+POST {{base}}/api/v1/threeds/<paymentId>/challenge-response
+X-Api-Key: {{apiKey}}
+Content-Type: application/json
+
+{ "cres": "<base64-cres-from-the-acs>" }
+
+### 7. 3DS challenge result, as the card issuer's ACS makes the shopper's browser post it (no API key).
+### Only for payments without returnUrl.
 ### Normally sent by the browser after the challenge; here only to see the redirect / result page.
 POST {{base}}/api/v1/threeds/<paymentId>/notification
 Content-Type: application/x-www-form-urlencoded

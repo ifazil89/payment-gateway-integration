@@ -24,7 +24,7 @@ public enum PaymentState {
         return switch (niState.toUpperCase(Locale.ROOT)) {
             case "STARTED" -> CREATED;
             case "AWAIT_3DS" -> AWAITING_3DS;
-            case "AUTHORISED" -> AUTHORISED;
+            case "AUTHORISED", "AUTHORIZED" -> AUTHORISED;   // the EMV 3DS guide spells it both ways
             case "DECLINED" -> DECLINED;
             case "FAILED" -> FAILED;
             default -> null;

@@ -12,19 +12,21 @@ info:
     | status | next |
     |---|---|
     | `AUTHORISED` | capture API |
-    | `CHALLENGE_REQUIRED` | 3DS challenge in the shopper's browser (see below), then `GET /api/v1/payments/{paymentId}` |
+    | `CHALLENGE_REQUIRED` | 3DS challenge (see below) |
     | `PENDING` | `GET /api/v1/payments/{paymentId}` later, or retry with the **same** `Idempotency-Key` |
     | `DECLINED` / `FAILED` | stop, or a new attempt with a new `Idempotency-Key` |
 
-    **3DS challenge** (`CHALLENGE_REQUIRED`):
-    1. In the shopper's browser, POST a form with the field `creq` = `threeDs.creq` to `threeDs.acsUrl`
-       (top-level page or an iframe). The card issuer shows its challenge (e.g. an OTP).
-    2. The issuer makes the browser post the result to this service
-       (`POST /api/v1/threeds/{paymentId}/notification`); we finish the payment with N-Genius.
-    3. The browser is redirected (303) to your `returnUrl` + `paymentId` and `status` query parameters,
-       or sees a short "you can close this window" page if you sent no `returnUrl`.
-    4. Read the final status with `GET /api/v1/payments/{paymentId}`. Don't trust `status` in the
-       redirect URL alone: the shopper can change it.
+    **3DS challenge** (`CHALLENGE_REQUIRED`), with a `returnUrl` on the payment:
+    1. `GET /api/v1/threeds/{paymentId}/challenge` returns the card issuer's challenge page as HTML
+       (this service posts `creq` to N-Genius' `threeDSMethodURL`). Show it to the shopper, e.g. in a mobile WebView.
+    2. After the challenge (e.g. an OTP), the issuer's ACS posts the form field `cres` to your `returnUrl`.
+    3. Send it unchanged: `POST /api/v1/threeds/{paymentId}/challenge-response` `{"cres": "..."}`.
+       The answer is the payment with its final status (`PENDING` if N-Genius did not answer: read it later
+       with `GET /api/v1/payments/{paymentId}`).
+
+    Without a `returnUrl`, post `threeDs.creq` to `threeDs.acsUrl` in the shopper's browser yourself; the ACS
+    then posts the result to `POST /api/v1/threeds/{paymentId}/notification` and the browser sees a short
+    "you can close this window" page. Read the final status with `GET /api/v1/payments/{paymentId}`.
 
     `returnUrl` must start with one of the return URLs configured for your client.
 
@@ -41,7 +43,7 @@ tags:
   - name: Payments
     description: Authorise card payments
   - name: 3DS
-    description: Called by the shopper's browser during a 3DS challenge (not by your backend)
+    description: The 3DS challenge after `CHALLENGE_REQUIRED`
 
 paths:
   /api/v1/payments:
@@ -133,14 +135,84 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /api/v1/threeds/{paymentId}/challenge:
+    get:
+      tags: [3DS]
+      operationId: getThreeDsChallengePage
+      summary: The 3DS challenge page (HTML) to show the shopper
+      description: |
+        Only while the payment is `CHALLENGE_REQUIRED`. This service posts the form field `creq` to N-Genius'
+        `threeDSMethodURL` and returns the HTML page as-is, with a `<base href>` added so its relative links
+        still point to the 3DS server. Show it to the shopper, e.g. in a mobile WebView.
+        After the challenge the ACS posts `cres` to your `returnUrl`; send it to
+        `POST /api/v1/threeds/{paymentId}/challenge-response`.
+
+        Nothing changes on the payment: it can be called again (e.g. on reload).
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+      responses:
+        '200':
+          description: The challenge page
+          content:
+            text/html:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/GatewayError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+
+  /api/v1/threeds/{paymentId}/challenge-response:
+    post:
+      tags: [3DS]
+      operationId: submitThreeDsChallengeResponse
+      summary: Send the challenge result (cres) the ACS posted to your returnUrl
+      description: |
+        The CRes is sent to N-Genius, which finishes the authentication. The answer is the payment:
+        `AUTHORISED`, `DECLINED`, `FAILED`, or `PENDING` if N-Genius did not answer (read it later with
+        `GET /api/v1/payments/{paymentId}`; the CRes is not sent again). A repeated call gets the current status.
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChallengeResponseRequest'
+      responses:
+        '200':
+          description: The payment after the challenge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /api/v1/threeds/{paymentId}/notification:
     post:
       tags: [3DS]
       operationId: threeDsNotification
-      summary: 3DS challenge result (posted by the shopper's browser)
+      summary: 3DS challenge result (posted by the shopper's browser, payments without returnUrl)
       description: |
-        The `notificationURL` given to the card issuer. The issuer's ACS makes the shopper's browser post
-        the challenge result (`cres`) here after the challenge. **Not called by your backend; no API key.**
+        The `notificationURL` given to the card issuer when the payment has no `returnUrl`. The issuer's ACS
+        makes the shopper's browser post the challenge result (`cres`) here. **Not called by your backend; no API key.**
 
         The CRes is sent to N-Genius, then the browser is sent to the payment's `returnUrl`.
         If N-Genius does not answer, the status is `PENDING`: read it later with `GET /api/v1/payments/{paymentId}`.
@@ -274,7 +346,7 @@ components:
             traceId: 4bf92f3577b34da6a3ce929d0e0e4736
             timestamp: '2026-10-24T07:00:01.412Z'
     Conflict:
-      description: IDEMPOTENCY_KEY_REUSED (same key, different request) or REQUEST_IN_PROGRESS
+      description: IDEMPOTENCY_KEY_REUSED (same key, different request), REQUEST_IN_PROGRESS, or CHALLENGE_NOT_REQUIRED (no 3DS challenge to show)
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -481,11 +553,23 @@ components:
         threeDs:
           $ref: '#/components/schemas/ThreeDsChallenge'
 
+    ChallengeResponseRequest:
+      type: object
+      required: [cres]
+      properties:
+        cres:
+          type: string
+          minLength: 1
+          maxLength: 20000
+          description: The form field `cres` the card issuer's ACS posted to your `returnUrl`, unchanged
+          example: eyJ0cmFuc1N0YXR1cyI6IlkiLCJtZXNzYWdlVHlwZSI6IkNSZXMifQ==
+
     ThreeDsChallenge:
       type: object
       description: |
-        Only when `status` is `CHALLENGE_REQUIRED`. In the shopper's browser, POST a form with the field
-        `creq` (this `creq` value) to `acsUrl`:
+        Only when `status` is `CHALLENGE_REQUIRED`. With a `returnUrl`, get the page from
+        `GET /api/v1/threeds/{paymentId}/challenge` instead. Otherwise, in the shopper's browser, POST a form
+        with the field `creq` (this `creq` value) to `acsUrl`:
 
         ```html
         <form method="post" action="{acsUrl}"><input type="hidden" name="creq" value="{creq}"></form>
@@ -515,7 +599,7 @@ components:
           type: string
           description: |
             VALIDATION_ERROR, MALFORMED_REQUEST, MISSING_HEADER, UNAUTHORIZED, IDEMPOTENCY_KEY_REUSED,
-            REQUEST_IN_PROGRESS, INVALID_AMOUNT, GATEWAY_REJECTED, GATEWAY_ERROR, GATEWAY_TIMEOUT, REQUEST_ERROR,
+            REQUEST_IN_PROGRESS, CHALLENGE_NOT_REQUIRED, INVALID_AMOUNT, GATEWAY_REJECTED, GATEWAY_ERROR, GATEWAY_TIMEOUT, REQUEST_ERROR,
             INTERNAL_ERROR
           example: VALIDATION_ERROR
         message:

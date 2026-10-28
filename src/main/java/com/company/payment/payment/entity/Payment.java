@@ -87,6 +87,9 @@ public class Payment {
     /** Base64 challenge request, needed by the 3DS API when state = CHALLENGE_REQUIRED. */
     @Column(name = "threeds_creq")
     private String threeDsCreq;
+    /** N-Genius "threeDSMethodURL": the backend posts the CReq here to get the challenge page (HTML). */
+    @Column(name = "threeds_method_url")
+    private String threeDsMethodUrl;
     /** N-Genius "cnp:3ds2-challenge-response" link: where the challenge result (CRes) is sent. */
     @Column(name = "threeds_challenge_response_url")
     private String threeDsChallengeResponseUrl;
@@ -128,11 +131,12 @@ public class Payment {
     }
 
     public void challengeRequired(String niState, String transStatus, String acsUrl, String creq,
-                                  String challengeResponseUrl) {
+                                  String methodUrl, String challengeResponseUrl) {
         this.niState = niState;
         this.threeDsTransStatus = transStatus;
         this.threeDsAcsUrl = acsUrl;
         this.threeDsCreq = creq;
+        this.threeDsMethodUrl = methodUrl;
         this.threeDsChallengeResponseUrl = challengeResponseUrl;
         this.state = PaymentState.CHALLENGE_REQUIRED;
         touch();

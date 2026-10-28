@@ -56,6 +56,7 @@ class PaymentApiTest {
     private static final String API_KEY = "sandbox-key";     // application-sandbox.yml: local-client:sandbox-key
     private static final String RETURN_URL = "http://localhost:3000/checkout/done?order=SO-1001";   // sandbox return-urls
     private static final String NI = "https://api-gateway.sandbox.ngenius-payments.com/transactions/outlets/outlet-1/orders/";
+    private static final String METHOD_URL = "https://paypage.sandbox.ngenius-payments.com/3ds2/method";
 
     @Autowired
     MockMvc mvc;
@@ -140,12 +141,145 @@ class PaymentApiTest {
                 Map.of("cnp:3ds2-authentication", Map.of("href", NI + "order-4/payments/pay-1/card/3ds2/authentications")),
                 null));
         when(niClient.authenticateThreeDs(any(), any())).thenReturn(niPayment("AUTHORISED", Map.of(),
-                new NiThreeDs("Y", null, null, "05", "2.2.0")));
+                new NiThreeDs("Y", null, null, "05", "2.2.0", null)));
 
         mvc.perform(payment("key-4", cardRequest("250.00")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("AUTHORISED"))
                 .andExpect(jsonPath("$.threeDs").doesNotExist());
+    }
+
+    @Test
+    void threeDsFrictionlessWithUsSpellingIsAuthorised() throws Exception {
+        givenOrder("order-40");
+        when(niClient.payWithCard(any(), any())).thenReturn(niPayment("AWAIT_3DS",
+                Map.of("cnp:3ds2-authentication", Map.of("href", NI + "order-40/payments/pay-1/card/3ds2/authentications")),
+                null));
+        when(niClient.authenticateThreeDs(any(), any())).thenReturn(niPayment("AUTHORIZED", Map.of(),
+                new NiThreeDs("Y", null, null, "05", "2.2.0", null)));
+
+        mvc.perform(payment("key-40", cardRequest("250.00")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("AUTHORISED"));
+    }
+
+    @Test
+    void stillAwaiting3dsWithChallengeDataNeedsTheChallenge() throws Exception {
+        // N-Genius guide: transStatus other than C, but the payment is still AWAIT_3DS -> challenge step required
+        givenOrder("order-41");
+        when(niClient.payWithCard(any(), any())).thenReturn(niPayment("AWAIT_3DS",
+                Map.of("cnp:3ds2-authentication", Map.of("href", NI + "order-41/payments/pay-1/card/3ds2/authentications")),
+                null));
+        when(niClient.authenticateThreeDs(any(), any())).thenReturn(niPayment("AWAIT_3DS",
+                Map.of("cnp:3ds2-challenge-response",
+                        Map.of("href", NI + "order-41/payments/pay-1/card/3ds2/challenge-response")),
+                new NiThreeDs("U", "https://acs.bank.example/challenge", "Y3JlcQ==", null, "2.2.0", null)));
+
+        mvc.perform(payment("key-41", cardRequest("250.00")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CHALLENGE_REQUIRED"))
+                .andExpect(jsonPath("$.threeDs.acsUrl").value("https://acs.bank.example/challenge"))
+                .andExpect(jsonPath("$.threeDs.creq").value("Y3JlcQ=="));
+    }
+
+    // ------------------------------------------------------------------ 3DS challenge page + CRes from the client
+
+    @Test
+    void returnUrlIsTheNotificationUrl() throws Exception {
+        challengedPayment("key-50", "order-50", RETURN_URL);
+
+        // the ACS posts the CRes to the client, not to us
+        ArgumentCaptor<NiThreeDsRequest> threeDs = ArgumentCaptor.forClass(NiThreeDsRequest.class);
+        verify(niClient).authenticateThreeDs(eq(NI + "order-50/payments/pay-1/card/3ds2/authentications"),
+                threeDs.capture());
+        assertThat(threeDs.getValue().notificationUrl()).isEqualTo(RETURN_URL);
+    }
+
+    @Test
+    void challengePageIsLoadedFromThreeDsMethodUrl() throws Exception {
+        String paymentId = challengedPayment("key-51", "order-51", RETURN_URL);
+        when(niClient.challengePage(any(), any()))
+                .thenReturn("<html><head><title>OTP</title></head><body><form action=\"submit\"></form></body></html>");
+
+        mvc.perform(get("/api/v1/threeds/{id}/challenge", paymentId).header("X-Api-Key", API_KEY))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Type", org.hamcrest.Matchers.startsWith("text/html")))
+                // relative links of the page still point to the 3DS server when shown from our response
+                .andExpect(content().string(org.hamcrest.Matchers.containsString(
+                        "<head><base href=\"" + METHOD_URL + "\"><title>OTP</title>")));
+
+        verify(niClient).challengePage(METHOD_URL, "Y3JlcQ==");
+    }
+
+    @Test
+    void challengePageOnlyWhileChallengeRequired() throws Exception {
+        String paymentId = challengedPayment("key-52", "order-52", RETURN_URL);
+        when(niClient.completeChallenge(any(), any())).thenReturn(niPayment("AUTHORISED", Map.of(), null));
+        mvc.perform(challengeResponse(paymentId)).andExpect(status().isOk());
+
+        mvc.perform(get("/api/v1/threeds/{id}/challenge", paymentId).header("X-Api-Key", API_KEY))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("CHALLENGE_NOT_REQUIRED"));
+        verify(niClient, never()).challengePage(any(), any());
+    }
+
+    @Test
+    void challengePageTimeoutIs504() throws Exception {
+        String paymentId = challengedPayment("key-53", "order-53", RETURN_URL);
+        when(niClient.challengePage(any(), any())).thenThrow(new ResourceAccessException("Read timed out"));
+
+        mvc.perform(get("/api/v1/threeds/{id}/challenge", paymentId).header("X-Api-Key", API_KEY))
+                .andExpect(status().isGatewayTimeout())
+                .andExpect(jsonPath("$.code").value("GATEWAY_TIMEOUT"));
+    }
+
+    @Test
+    void clientSendsTheCresAndGetsTheOutcome() throws Exception {
+        String paymentId = challengedPayment("key-54", "order-54", RETURN_URL);
+        when(niClient.completeChallenge(any(), any())).thenReturn(niPayment("AUTHORISED", Map.of(),
+                new NiThreeDs("Y", null, null, "05", "2.2.0", null)));
+
+        mvc.perform(challengeResponse(paymentId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paymentId").value(paymentId))
+                .andExpect(jsonPath("$.status").value("AUTHORISED"))
+                .andExpect(jsonPath("$.threeDs").doesNotExist());
+
+        ArgumentCaptor<NiChallengeResponseRequest> cres = ArgumentCaptor.forClass(NiChallengeResponseRequest.class);
+        verify(niClient).completeChallenge(eq(NI + "order-54/payments/pay-1/card/3ds2/challenge-response"), cres.capture());
+        assertThat(cres.getValue().base64EncodedCRes()).isEqualTo("Y3Jlcw==");
+
+        // a repeated call does not send the CRes again
+        mvc.perform(challengeResponse(paymentId)).andExpect(jsonPath("$.status").value("AUTHORISED"));
+        verify(niClient, times(1)).completeChallenge(any(), any());
+    }
+
+    @Test
+    void challengeEndpointsNeedTheApiKeyAndTheOwningClient() throws Exception {
+        String paymentId = challengedPayment("key-55", "order-55", RETURN_URL);
+
+        mvc.perform(get("/api/v1/threeds/{id}/challenge", paymentId))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/v1/threeds/{id}/challenge-response", paymentId)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"cres\": \"Y3Jlcw==\"}"))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/threeds/{id}/challenge", paymentId).header("X-Api-Key", "other-client-key"))
+                .andExpect(status().isNotFound());
+        mvc.perform(post("/api/v1/threeds/{id}/challenge-response", paymentId).header("X-Api-Key", "other-client-key")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"cres\": \"Y3Jlcw==\"}"))
+                .andExpect(status().isNotFound());
+        verify(niClient, never()).challengePage(any(), any());
+        verify(niClient, never()).completeChallenge(any(), any());
+    }
+
+    @Test
+    void challengeResponseWithoutCresIsRejected() throws Exception {
+        String paymentId = challengedPayment("key-56", "order-56", RETURN_URL);
+
+        mvc.perform(post("/api/v1/threeds/{id}/challenge-response", paymentId).header("X-Api-Key", API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"cres\": \"\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
     }
 
     // ------------------------------------------------------------------ 3DS challenge result and status
@@ -154,7 +288,7 @@ class PaymentApiTest {
     void challengeResultAuthorisesAndSendsTheShopperBack() throws Exception {
         String paymentId = challengedPayment("key-20", "order-20", RETURN_URL);
         when(niClient.completeChallenge(any(), any())).thenReturn(niPayment("AUTHORISED", Map.of(),
-                new NiThreeDs("Y", null, null, "05", "2.2.0")));
+                new NiThreeDs("Y", null, null, "05", "2.2.0", null)));
 
         // posted by the shopper's browser: no API key
         mvc.perform(notification(paymentId))
@@ -397,7 +531,7 @@ class PaymentApiTest {
         return niPayment("AWAIT_3DS",
                 Map.of("cnp:3ds2-challenge-response",
                         Map.of("href", NI + orderRef + "/payments/pay-1/card/3ds2/challenge-response")),
-                new NiThreeDs("C", "https://acs.bank.example/challenge", "Y3JlcQ==", null, "2.2.0"));
+                new NiThreeDs("C", "https://acs.bank.example/challenge", "Y3JlcQ==", null, "2.2.0", METHOD_URL));
     }
 
     /** What the card issuer's ACS makes the shopper's browser post (form, no API key). */
@@ -405,6 +539,14 @@ class PaymentApiTest {
         return post("/api/v1/threeds/{paymentId}/notification", paymentId)
                 .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                 .param("cres", "Y3Jlcw==");
+    }
+
+    /** The client passes on the CRes the ACS posted to its returnUrl. */
+    private static MockHttpServletRequestBuilder challengeResponse(String paymentId) {
+        return post("/api/v1/threeds/{paymentId}/challenge-response", paymentId)
+                .header("X-Api-Key", API_KEY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"cres\": \"Y3Jlcw==\"}");
     }
 
     private static String withReturnUrl(String request, String returnUrl) {
