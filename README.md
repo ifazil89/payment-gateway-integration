@@ -81,7 +81,14 @@ src/main/java/com.company.payment
 │   ├── controller/ThreeDsController     HTML page / payment JSON / 303 to returnUrl or a small result page
 │   └── service/ThreeDsService           challenge page + the challenge result, step by step
 │
-├── ni/                                  N-Genius, SHARED by payment / threeds / token
+├── order/                               FEATURE: retrieve order (live N-Genius status; updates a pending payment)
+│   ├── api/OrdersApi                    interface: GET /api/v1/orders/{orderReference}
+│   ├── model/OrderStatusResponse
+│   ├── controller/OrderController
+│   ├── mapper/OrderMapper               MapStruct: N-Genius order + payment -> OrderStatusResponse
+│   └── service/OrderService             the steps below
+│
+├── ni/                                  N-Genius, SHARED by payment / threeds / order / token
 │   ├── client/NiClient                  every N-Genius call, one method each
 │   ├── client/NiAccessTokenProvider     5-minute access token, cached
 │   ├── config/NiConfig                  pooled HTTP client, timeouts, pool metrics, logging interceptor
@@ -142,7 +149,7 @@ otherwise `400 VALIDATION_ERROR` on `returnUrl`. This keeps the redirect from be
 |---|---|---|
 | `AUTHORISED` | money reserved (also after frictionless 3DS) | capture (step to come) |
 | `CHALLENGE_REQUIRED` | shopper must complete a 3DS challenge (`threeDs` in the response) | [3DS challenge](#3ds-challenge), then `GET /api/v1/payments/{paymentId}` |
-| `PENDING` | N-Genius hasn't confirmed yet | `GET /api/v1/payments/{paymentId}` later, or retry with the **same** Idempotency-Key |
+| `PENDING` | N-Genius hasn't confirmed yet | `GET /api/v1/orders/{orderReference}` (asks N-Genius), `GET /api/v1/payments/{paymentId}` later, or retry with the **same** Idempotency-Key |
 | `DECLINED` / `FAILED` | refused | stop, or a new attempt with a new Idempotency-Key |
 
 ### Flow (`PaymentService.createPayment`)
@@ -238,6 +245,25 @@ trusted status with `GET /api/v1/payments/{paymentId}`; the `status` in the redi
 The stored status (same `PaymentResponse` as the POST; `threeDs` only while `CHALLENGE_REQUIRED`).
 A client only sees its own payments: another client's id is `404 PAYMENT_NOT_FOUND`.
 
+### GET /api/v1/orders/{orderReference} (retrieve order)
+
+The live state at N-Genius ([retrieve order status](https://docs.ngenius-payments.com/reference/retrieve-order-status)),
+for the client's own orders (`orderReference` from the payment response; another client's is `404 ORDER_NOT_FOUND`).
+`OrderService.retrieveOrder`:
+
+| # | Step | N-Genius call | Payment after |
+|---|---|---|---|
+| 1 | Find our payment by order reference + client | — | — |
+| 2 | Retrieve the order; pick our payment in `_embedded.payment` by its reference (there is no order-level state) | `GET /transactions/outlets/{outlet}/orders/{ref}` | — |
+| 3 | `Payment.niStateRetrieved`: a pending payment takes a final N-Genius outcome; saved under the optimistic lock | — | `AUTHORISED` / `DECLINED` / `FAILED`, or unchanged |
+| 4 | Answer `OrderStatusResponse` | — | |
+
+- **Use it** after `PENDING` (e.g. a timeout on the card or 3DS call) to learn the outcome N-Genius already has.
+- **Never undoes anything:** a known outcome stays (N-Genius `CAPTURED` / `REVERSED` show only in `gatewayState`),
+  and `CHALLENGE_REQUIRED` is not moved back by N-Genius' `AWAIT_3DS`.
+- **Errors:** N-Genius 4xx → 422, 5xx → 502, timeout → 504; nothing is changed, so it is safe to call again.
+- `gatewayState` is N-Genius' raw payment state; `cardBrand` and `maskedPan` come from N-Genius (also for card-on-file).
+
 ### Error response
 
 Every non-200 response has the same body: **`ErrorResponse`**, plus **`ErrorDetail`** entries for field errors.
@@ -297,7 +323,7 @@ To change the error shape, edit `common/model/ErrorResponse` / `ErrorDetail`, th
 |---|---|
 | 400 | `VALIDATION_ERROR` (with field errors such as `card.pan`, `returnUrl`), `MALFORMED_REQUEST`, `MISSING_HEADER`, `MISSING_CRES` |
 | 401 | `UNAUTHORIZED` |
-| 404 | `PAYMENT_NOT_FOUND` |
+| 404 | `PAYMENT_NOT_FOUND`, `ORDER_NOT_FOUND` |
 | 409 | `IDEMPOTENCY_KEY_REUSED`, `REQUEST_IN_PROGRESS`, `CHALLENGE_NOT_REQUIRED` |
 | 422 | `INVALID_AMOUNT` |
 | 500 | `INTERNAL_ERROR` |
@@ -493,6 +519,7 @@ Confirmed by the N-Genius EMV 3DS 2.x guide: the links `cnp:3ds2-authentication`
 
 **Next steps:**
 1. Capture
-2. Reconciliation (resolve `PENDING` with N-Genius, e.g. after a timeout on the challenge result)
+2. Automatic reconciliation: a scheduled job calling retrieve order for payments `PENDING` too long
+   (today a client calls `GET /api/v1/orders/{orderReference}`)
 3. Webhooks
 4. Token

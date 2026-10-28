@@ -3,6 +3,7 @@ package com.company.payment.ni.dto;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.time.OffsetDateTime;
 import java.util.Map;
 import java.util.Optional;
 
@@ -17,7 +18,9 @@ public record NiPaymentResponse(
         String state,
         NiAmount amount,
         @JsonProperty("3ds2") NiThreeDs threeDs,
-        @JsonProperty("_links") Map<String, Object> links) {
+        @JsonProperty("_links") Map<String, Object> links,
+        NiPaymentMethod paymentMethod,
+        OffsetDateTime updateDateTime) {
 
     public Optional<String> link(String relation) {
         return NiLinks.href(links, relation);

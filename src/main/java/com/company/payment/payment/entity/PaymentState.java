@@ -16,6 +16,11 @@ public enum PaymentState {
     DECLINED,
     FAILED;
 
+    /** The outcome is known: N-Genius will not change it any more (capture and refund are separate steps). */
+    public boolean isFinal() {
+        return this == AUTHORISED || this == DECLINED || this == FAILED;
+    }
+
     /** N-Genius payment state -> our state. null = unknown state: keep the current one (logged). */
     public static PaymentState fromNi(String niState) {
         if (niState == null) {

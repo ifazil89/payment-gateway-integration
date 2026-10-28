@@ -13,7 +13,7 @@ info:
     |---|---|
     | `AUTHORISED` | capture API |
     | `CHALLENGE_REQUIRED` | 3DS challenge (see below) |
-    | `PENDING` | `GET /api/v1/payments/{paymentId}` later, or retry with the **same** `Idempotency-Key` |
+    | `PENDING` | `GET /api/v1/orders/{orderReference}` (asks N-Genius), `GET /api/v1/payments/{paymentId}` later, or retry with the **same** `Idempotency-Key` |
     | `DECLINED` / `FAILED` | stop, or a new attempt with a new `Idempotency-Key` |
 
     **3DS challenge** (`CHALLENGE_REQUIRED`), with a `returnUrl` on the payment:
@@ -44,6 +44,8 @@ tags:
     description: Authorise card payments
   - name: 3DS
     description: The 3DS challenge after `CHALLENGE_REQUIRED`
+  - name: Orders
+    description: The live order status at N-Genius
 
 paths:
   /api/v1/payments:
@@ -134,6 +136,57 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+
+  /api/v1/orders/{orderReference}:
+    get:
+      tags: [Orders]
+      operationId: getOrder
+      summary: Live order status at N-Genius (retrieve order)
+      description: |
+        Asks N-Genius for the order's current state, for one of your own payments (`orderReference` from the
+        payment response). Use it e.g. after `PENDING` (a timeout): if N-Genius already knows the outcome
+        (`AUTHORISED`, `DECLINED`, `FAILED`), the payment is updated, so `GET /api/v1/payments/{paymentId}`
+        shows it too. A known outcome is never changed, and a payment waiting for a 3DS challenge stays
+        `CHALLENGE_REQUIRED`.
+
+        `gatewayState` is N-Genius' raw payment state (e.g. `AWAIT_3DS`, `AUTHORISED`, `CAPTURED`), for support.
+        On 422 / 502 / 504 nothing is changed: it is safe to call again.
+      parameters:
+        - name: orderReference
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The `orderReference` from the payment response
+          example: cac88045-bec0-432a-8fdd-06902da874d2
+      responses:
+        '200':
+          description: The order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: ORDER_NOT_FOUND - unknown order reference (or another client's order)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              example:
+                code: ORDER_NOT_FOUND
+                message: No order cac88045-bec0-432a-8fdd-06902da874d2
+                correlationId: demo-1
+                traceId: 4bf92f3577b34da6a3ce929d0e0e4736
+                timestamp: '2026-10-28T08:25:08Z'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/GatewayError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
 
   /api/v1/threeds/{paymentId}/challenge:
     get:
@@ -553,6 +606,48 @@ components:
         threeDs:
           $ref: '#/components/schemas/ThreeDsChallenge'
 
+    OrderStatusResponse:
+      type: object
+      required: [orderReference, paymentId, merchantOrderId, status]
+      properties:
+        orderReference:
+          type: string
+          description: N-Genius order reference
+          example: cac88045-bec0-432a-8fdd-06902da874d2
+        paymentId:
+          type: string
+          description: Our payment id for this order
+          example: 7f3c2a9e-1b4d-4e8f-9a2b-3c4d5e6f7a8b
+        merchantOrderId:
+          type: string
+          example: SO-1001
+        action:
+          type: string
+          description: N-Genius order action (`AUTH` = two-stage)
+          example: AUTH
+        amount:
+          $ref: '#/components/schemas/Amount'
+        status:
+          $ref: '#/components/schemas/PaymentStatus'
+        gatewayState:
+          type: string
+          description: N-Genius' raw payment state, for support
+          example: AUTHORISED
+        cardBrand:
+          type: string
+          example: VISA
+        maskedPan:
+          type: string
+          example: 411111******1111
+        orderCreatedAt:
+          type: string
+          format: date-time
+          description: When N-Genius created the order
+        updatedAt:
+          type: string
+          format: date-time
+          description: Last change of the payment at N-Genius
+
     ChallengeResponseRequest:
       type: object
       required: [cres]
@@ -599,7 +694,7 @@ components:
           type: string
           description: |
             VALIDATION_ERROR, MALFORMED_REQUEST, MISSING_HEADER, UNAUTHORIZED, IDEMPOTENCY_KEY_REUSED,
-            REQUEST_IN_PROGRESS, CHALLENGE_NOT_REQUIRED, INVALID_AMOUNT, GATEWAY_REJECTED, GATEWAY_ERROR, GATEWAY_TIMEOUT, REQUEST_ERROR,
+            REQUEST_IN_PROGRESS, CHALLENGE_NOT_REQUIRED, ORDER_NOT_FOUND, INVALID_AMOUNT, GATEWAY_REJECTED, GATEWAY_ERROR, GATEWAY_TIMEOUT, REQUEST_ERROR,
             INTERNAL_ERROR
           example: VALIDATION_ERROR
         message:

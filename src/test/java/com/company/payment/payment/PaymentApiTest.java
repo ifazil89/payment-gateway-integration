@@ -2,7 +2,9 @@ package com.company.payment.payment;
 
 import com.company.payment.ni.client.NiClient;
 import com.company.payment.ni.exception.NiException;
+import com.company.payment.ni.dto.NiAmount;
 import com.company.payment.ni.dto.NiCardRequest;
+import com.company.payment.ni.dto.NiPaymentMethod;
 import com.company.payment.ni.dto.NiChallengeResponseRequest;
 import com.company.payment.ni.dto.NiOrderRequest;
 import com.company.payment.ni.dto.NiOrderResponse;
@@ -24,6 +26,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.web.client.ResourceAccessException;
 
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -503,14 +506,110 @@ class PaymentApiTest {
                 .doesNotContain(API_KEY);                      // X-Api-Key header masked
     }
 
+    // ------------------------------------------------------------------ retrieve order
+
+    @Test
+    void pendingPaymentTakesTheOutcomeFromNgenius() throws Exception {
+        // the card call timed out: the outcome is unknown, the payment is PENDING
+        givenOrder("order-60");
+        when(niClient.payWithCard(any(), any())).thenThrow(new ResourceAccessException("Read timed out"));
+        mvc.perform(payment("key-60", cardRequest("250.00"))).andExpect(status().isGatewayTimeout());
+
+        when(niClient.getOrder("order-60")).thenReturn(niOrder("order-60", "AUTHORISED"));
+        String body = mvc.perform(get("/api/v1/orders/{ref}", "order-60").header("X-Api-Key", API_KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.orderReference").value("order-60"))
+                .andExpect(jsonPath("$.merchantOrderId").value("SO-1001"))
+                .andExpect(jsonPath("$.action").value("AUTH"))
+                .andExpect(jsonPath("$.amount.value").value(250.00))
+                .andExpect(jsonPath("$.amount.currency").value("AED"))
+                .andExpect(jsonPath("$.status").value("AUTHORISED"))
+                .andExpect(jsonPath("$.gatewayState").value("AUTHORISED"))
+                .andExpect(jsonPath("$.cardBrand").value("VISA"))
+                .andExpect(jsonPath("$.maskedPan").value("411111******1111"))
+                .andExpect(jsonPath("$.orderCreatedAt").value("2026-10-28T08:25:08Z"))
+                .andReturn().getResponse().getContentAsString();
+
+        // stored too: the payment status shows the outcome
+        String paymentId = com.jayway.jsonpath.JsonPath.read(body, "$.paymentId");
+        mvc.perform(get("/api/v1/payments/{id}", paymentId).header("X-Api-Key", API_KEY))
+                .andExpect(jsonPath("$.status").value("AUTHORISED"));
+    }
+
+    @Test
+    void retrieveOrderDoesNotUndoAChallenge() throws Exception {
+        String paymentId = challengedPayment("key-61", "order-61", RETURN_URL);
+        when(niClient.getOrder("order-61")).thenReturn(niOrder("order-61", "AWAIT_3DS"));
+
+        mvc.perform(get("/api/v1/orders/{ref}", "order-61").header("X-Api-Key", API_KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CHALLENGE_REQUIRED"))
+                .andExpect(jsonPath("$.gatewayState").value("AWAIT_3DS"));
+        mvc.perform(get("/api/v1/payments/{id}", paymentId).header("X-Api-Key", API_KEY))
+                .andExpect(jsonPath("$.status").value("CHALLENGE_REQUIRED"))
+                .andExpect(jsonPath("$.threeDs.creq").value("Y3JlcQ=="));
+    }
+
+    @Test
+    void retrieveOrderKeepsAKnownOutcome() throws Exception {
+        givenOrder("order-62");
+        when(niClient.payWithCard(any(), any())).thenReturn(niPayment("AUTHORISED", Map.of(), null));
+        mvc.perform(payment("key-62", cardRequest("250.00"))).andExpect(jsonPath("$.status").value("AUTHORISED"));
+
+        // a later N-Genius state (captured elsewhere) is shown, our outcome stays
+        when(niClient.getOrder("order-62")).thenReturn(niOrder("order-62", "CAPTURED"));
+        mvc.perform(get("/api/v1/orders/{ref}", "order-62").header("X-Api-Key", API_KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("AUTHORISED"))
+                .andExpect(jsonPath("$.gatewayState").value("CAPTURED"));
+    }
+
+    @Test
+    void orderOfAnotherClientIsNotFound() throws Exception {
+        givenOrder("order-63");
+        when(niClient.payWithCard(any(), any())).thenReturn(niPayment("AUTHORISED", Map.of(), null));
+        mvc.perform(payment("key-63", cardRequest("250.00"))).andExpect(status().isOk());
+
+        mvc.perform(get("/api/v1/orders/{ref}", "order-63").header("X-Api-Key", "other-client-key"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("ORDER_NOT_FOUND"));
+        mvc.perform(get("/api/v1/orders/{ref}", "no-such-order").header("X-Api-Key", API_KEY))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("ORDER_NOT_FOUND"));
+        mvc.perform(get("/api/v1/orders/{ref}", "order-63"))
+                .andExpect(status().isUnauthorized());
+        verify(niClient, never()).getOrder(any());
+    }
+
+    @Test
+    void ngeniusTimeoutOnRetrieveOrderIs504() throws Exception {
+        givenOrder("order-64");
+        when(niClient.payWithCard(any(), any())).thenThrow(new ResourceAccessException("Read timed out"));
+        mvc.perform(payment("key-64", cardRequest("250.00"))).andExpect(status().isGatewayTimeout());
+
+        when(niClient.getOrder("order-64")).thenThrow(new ResourceAccessException("Read timed out"));
+        mvc.perform(get("/api/v1/orders/{ref}", "order-64").header("X-Api-Key", API_KEY))
+                .andExpect(status().isGatewayTimeout())
+                .andExpect(jsonPath("$.code").value("GATEWAY_TIMEOUT"));
+    }
+
     // ------------------------------------------------------------------ helpers
+
+    /** What N-Genius "retrieve order" answers: an AUTH order of AED 250.00 with one card payment in this state. */
+    private static NiOrderResponse niOrder(String orderRef, String paymentState) {
+        NiPaymentResponse payment = new NiPaymentResponse("pay-1", orderRef, paymentState,
+                new NiAmount("AED", 25000L), null, Map.of(), new NiPaymentMethod("VISA", "411111******1111"),
+                OffsetDateTime.parse("2026-10-28T08:25:10Z"));
+        return new NiOrderResponse(orderRef, "AUTH", new NiAmount("AED", 25000L),
+                OffsetDateTime.parse("2026-10-28T08:25:08Z"), new NiOrderResponse.Embedded(List.of(payment)));
+    }
 
     private void givenOrder(String orderRef) {
         NiPaymentResponse started = new NiPaymentResponse("pay-1", orderRef, "STARTED", null, null, Map.of(
                 "payment:card", Map.of("href", NI + orderRef + "/payments/pay-1/card"),
-                "payment:saved-card", Map.of("href", NI + orderRef + "/payments/pay-1/saved-card")));
+                "payment:saved-card", Map.of("href", NI + orderRef + "/payments/pay-1/saved-card")), null, null);
         when(niClient.createOrder(any()))
-                .thenReturn(new NiOrderResponse(orderRef, null, new NiOrderResponse.Embedded(List.of(started))));
+                .thenReturn(new NiOrderResponse(orderRef, "AUTH", null, null, new NiOrderResponse.Embedded(List.of(started))));
     }
 
     /** A payment that needed a 3DS challenge; returns its paymentId. */
@@ -555,7 +654,7 @@ class PaymentApiTest {
     }
 
     private static NiPaymentResponse niPayment(String state, Map<String, Object> links, NiThreeDs threeDs) {
-        return new NiPaymentResponse("pay-1", null, state, null, threeDs, links);
+        return new NiPaymentResponse("pay-1", null, state, null, threeDs, links, null, null);
     }
 
     private static MockHttpServletRequestBuilder payment(String idempotencyKey, String body) {

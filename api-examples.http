@@ -58,6 +58,10 @@ Content-Type: application/json
 GET {{base}}/api/v1/payments/<paymentId>
 X-Api-Key: {{apiKey}}
 
+### 4b. Live order status at N-Genius (orderReference from a payment response), e.g. after PENDING
+GET {{base}}/api/v1/orders/<orderReference>
+X-Api-Key: {{apiKey}}
+
 ### 5. 3DS challenge page (HTML) for a CHALLENGE_REQUIRED payment, e.g. to show in a WebView
 GET {{base}}/api/v1/threeds/<paymentId>/challenge
 X-Api-Key: {{apiKey}}

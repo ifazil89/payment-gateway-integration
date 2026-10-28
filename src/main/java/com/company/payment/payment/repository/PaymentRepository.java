@@ -13,4 +13,7 @@ public interface PaymentRepository extends JpaRepository<Payment, String> {
 
     /** A client only ever sees its own payments. */
     Optional<Payment> findByIdAndClientId(String id, String clientId);
+
+    /** The payment behind an N-Genius order, only for the client that created it. */
+    Optional<Payment> findByNiOrderReferenceAndClientId(String niOrderReference, String clientId);
 }

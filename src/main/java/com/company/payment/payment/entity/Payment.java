@@ -15,6 +15,7 @@ import org.hibernate.type.SqlTypes;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -159,6 +160,25 @@ public class Payment {
     public void threeDsAuthenticated(String niState, String transStatus) {
         this.threeDsTransStatus = transStatus;
         niAnswered(niState);
+    }
+
+    /**
+     * The live N-Genius state, read with "retrieve order". Our state only moves to a final outcome, and only
+     * from a pending one: an in-between state (AWAIT_3DS) must not undo CHALLENGE_REQUIRED, and a known
+     * outcome is never overwritten. Returns true if anything changed (then it needs saving).
+     */
+    public boolean niStateRetrieved(String niState) {
+        boolean changed = !Objects.equals(this.niState, niState);
+        this.niState = niState;
+        PaymentState mapped = PaymentState.fromNi(niState);
+        if (mapped != null && mapped.isFinal() && !state.isFinal()) {
+            this.state = mapped;
+            changed = true;
+        }
+        if (changed) {
+            touch();
+        }
+        return changed;
     }
 
     public void fail(String reason) {

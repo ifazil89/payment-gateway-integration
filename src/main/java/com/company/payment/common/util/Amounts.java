@@ -30,6 +30,11 @@ public final class Amounts {
         return normalize(value, currency).movePointRight(decimals(currency)).longValueExact();
     }
 
+    /** 25000 AED -> 250.00, 1250 KWD -> 1.250 */
+    public static BigDecimal fromMinorUnits(long minorUnits, String currency) {
+        return BigDecimal.valueOf(minorUnits, decimals(currency));
+    }
+
     private static int decimals(String currency) {
         try {
             return Currency.getInstance(currency).getDefaultFractionDigits();
