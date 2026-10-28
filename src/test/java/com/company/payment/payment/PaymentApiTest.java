@@ -48,7 +48,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * Also checks the logging promises: correlation id round-trip, and no card number / CVV in any log line.
  */
 @SpringBootTest(properties = {"ni.api-key=test", "ni.outlet-id=outlet-1",
-        "app.security.api-keys=local-client:sandbox-key,other-client:other-client-key"})
+        "app.security.api-keys=local-client:sandbox-key,other-client:other-client-key",
+        "management.logging.export.otlp.enabled=false", "logging.file.name=target/logs/test.log"})
 @AutoConfigureMockMvc
 @ExtendWith(OutputCaptureExtension.class)
 class PaymentApiTest {

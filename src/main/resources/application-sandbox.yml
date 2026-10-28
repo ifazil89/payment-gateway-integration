@@ -20,3 +20,20 @@ logging:
     ecs:
       service:
         environment: sandbox
+
+# Logs to Grafana over OTLP/HTTP (sandbox only; production has no Grafana yet). Any OTLP receiver works:
+#   Loki 3 (http://<loki>:3100/otlp/v1/logs), Alloy / OpenTelemetry collector (http://<host>:4318/v1/logs),
+#   Grafana Cloud (OTLP gateway URL + MANAGEMENT_OPENTELEMETRY_LOGGING_EXPORT_OTLP_HEADERS_AUTHORIZATION="Basic ...").
+# GRAFANA_LOGS_ENABLED=false switches it off (e.g. locally without Grafana).
+management:
+  logging:
+    export:
+      otlp:
+        enabled: ${GRAFANA_LOGS_ENABLED:true}
+  opentelemetry:
+    logging:
+      export:
+        otlp:
+          endpoint: ${GRAFANA_OTLP_LOGS_ENDPOINT:http://localhost:4318/v1/logs}
+    resource-attributes:
+      deployment.environment.name: sandbox

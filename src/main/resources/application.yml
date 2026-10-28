@@ -54,11 +54,22 @@ springdoc:
 #   every line: @timestamp, log.level, log.logger, message, service.*, traceId, spanId,
 #               correlationId, clientId, paymentId + event fields (http.*, ni.*, payment.*)
 #   other formats: LOG_FORMAT=logstash | gelf
+# Also written to a rolling file (every environment, same JSON): rolled daily and at max-file-size into
+#   <file>.yyyy-MM-dd.<n>.gz, kept for max-history days, all files together at most total-size-cap.
+# Grafana (OTLP): only where configured, see application-sandbox.yml and GrafanaLogExportConfig.
 # ---------------------------------------------------------------------------
 logging:
+  file:
+    name: ${LOG_FILE:logs/ni-payment-integration.log}
+  logback:
+    rollingpolicy:
+      max-file-size: ${LOG_FILE_MAX_SIZE:50MB}
+      max-history: ${LOG_FILE_MAX_HISTORY:14}
+      total-size-cap: ${LOG_FILE_TOTAL_SIZE_CAP:2GB}
   structured:
     format:
       console: ${LOG_FORMAT:ecs}
+      file: ${LOG_FORMAT:ecs}
     ecs:
       service:
         name: ${spring.application.name}
