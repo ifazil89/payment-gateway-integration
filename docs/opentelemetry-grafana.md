@@ -20,7 +20,7 @@ Grafana itself stores nothing. It's the UI that queries Loki, Tempo and Promethe
 
 | Destination | Environments | Format |
 |---|---|---|
-| stdout | all | production: ECS JSON (`LOG_FORMAT`); sandbox: one readable line per event (messages only) |
+| stdout | all | production: ECS JSON (`LOG_FORMAT`); sandbox: readable text, each message with its fields (request/response JSON) indented below |
 | Rolling file `logs/ni-payment-integration.log` | all | same JSON as stdout |
 | Grafana, over OTLP | sandbox only (production has no Grafana yet) | OTLP log records |
 

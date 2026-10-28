@@ -21,11 +21,11 @@ export NI_OUTLET_ID='<outlet-reference>'
 # 2. Build: compiles (MapStruct, Lombok) and runs the tests
 mvn clean verify
 
-# 3. Start (sandbox profile: N-Genius sandbox + in-memory H2): one readable line per event on the console,
-#    full JSON in logs/ni-payment-integration.log
+# 3. Start (sandbox profile: N-Genius sandbox + in-memory H2): readable console, each event's message with its
+#    fields (HTTP request/response JSON, masked) on an indented line; full JSON in logs/ni-payment-integration.log
 mvn spring-boot:run
 
-#    ...or with every field (bodies too) under each console line
+#    ...or also with traceId/spanId/clientId and full timestamps
 mvn spring-boot:run -Dspring-boot.run.profiles=sandbox,plainlogs
 ```
 
@@ -352,7 +352,8 @@ Every response also returns the `X-Correlation-Id` and `X-Trace-Id` headers. A c
 ### What is logged for one payment
 
 One line per event; every HTTP exchange is ONE line, written when it is answered, carrying the request and the
-response (headers and bodies, masked). On the sandbox console only the message is shown:
+response (headers and bodies, masked). The messages, as on the sandbox console (there each one is followed by
+an indented line with its fields, e.g. `http.request.body={...} ... http.response.body={...}`):
 
 ```
 Payment created: CARD AED 250.00 for order SO-1001                         payment.* fields
@@ -401,7 +402,8 @@ Levels:
 (The exact envelope fields are Spring Boot's ECS formatter; the field values above are illustrative.)
 
 **Other formats** need no code change: `LOG_FORMAT=logstash` (Logstash JSON) or `LOG_FORMAT=gelf` (Graylog).
-**Human-readable console:** the sandbox default (messages only); the `plainlogs` profile adds every field.
+**Human-readable console:** the sandbox default (message + fields, bodies included); the `plainlogs` profile adds
+traceId, spanId, clientId and full timestamps.
 
 ### PCI DSS: what is never logged
 
@@ -448,7 +450,7 @@ How OpenTelemetry and Grafana fit together (signals, the path of a log line, col
 | Destination | Environments | Format |
 |---|---|---|
 | stdout | production | ECS JSON (`LOG_FORMAT`), for a log shipper |
-| stdout | sandbox | one short readable line per event: `time level [correlationId] [paymentId] logger : message`, no fields or bodies (`LOG_CONSOLE_FORMAT=ecs` for the full JSON; profile `plainlogs` for readable lines plus every field) |
+| stdout | sandbox | readable text: `time level [correlationId] [paymentId] logger : message`, then (if the event has fields) one indented line with them: the masked request/response JSON and headers for HTTP lines, `payment.*` / `ni.*` for business lines (`LOG_CONSOLE_FORMAT=ecs` for JSON; profile `plainlogs` adds traceId, spanId, clientId) |
 | Rolling file `logs/ni-payment-integration.log` (`LOG_FILE`) | all | same JSON as stdout (also with `plainlogs`) |
 | Grafana, over OTLP | **sandbox only** (production has no Grafana yet) | OTLP log records |
 

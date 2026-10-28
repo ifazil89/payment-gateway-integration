@@ -1,6 +1,6 @@
-# Human-readable console logs WITH every field (bodies too) for local debugging:
+# Human-readable console logs with every field (bodies too) AND traceId, spanId, clientId, full timestamps:
 #   mvn spring-boot:run -Dspring-boot.run.profiles=sandbox,plainlogs
-# (The sandbox console alone shows only the message lines; this adds the fields below each one.)
+# (The sandbox console alone already shows each message with its fields, in a shorter line prefix.)
 # Each line: time level [traceId,spanId] [correlationId] [clientId] [paymentId] logger : message + fields
 logging:
   structured:
