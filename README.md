@@ -21,10 +21,11 @@ export NI_OUTLET_ID='<outlet-reference>'
 # 2. Build: compiles (MapStruct, Lombok) and runs the tests
 mvn clean verify
 
-# 3. Start (sandbox profile: N-Genius sandbox + in-memory H2), JSON logs
+# 3. Start (sandbox profile: N-Genius sandbox + in-memory H2): one readable line per event on the console,
+#    full JSON in logs/ni-payment-integration.log
 mvn spring-boot:run
 
-#    ...or with human-readable logs for local debugging
+#    ...or with every field (bodies too) under each console line
 mvn spring-boot:run -Dspring-boot.run.profiles=sandbox,plainlogs
 ```
 
@@ -350,24 +351,25 @@ Every response also returns the `X-Correlation-Id` and `X-Trace-Id` headers. A c
 
 ### What is logged for one payment
 
+One line per event; every HTTP exchange is ONE line, written when it is answered, carrying the request and the
+response (headers and bodies, masked). On the sandbox console only the message is shown:
+
 ```
-HTTP IN  --> POST /api/v1/payments                                         headers (X-Api-Key masked), client ip
 Payment created: CARD AED 250.00 for order SO-1001                         payment.* fields
-HTTP OUT --> POST https://api-gateway.sandbox.../identity/auth/access-token   (Authorization masked)
-HTTP OUT <-- 200 POST https://.../identity/auth/access-token (180 ms)         (access_token masked)
-HTTP OUT --> POST https://.../transactions/outlets/.../orders                  request body
-HTTP OUT <-- 201 POST https://.../orders (310 ms)                             response body
+HTTP OUT <-- 200 POST https://.../identity/auth/access-token (180 ms)         (Authorization, access_token masked)
+HTTP OUT <-- 201 POST https://.../orders (310 ms)                             request + response body
 NI create order -> order a1b2... (312 ms)
-HTTP OUT --> PUT https://.../payments/.../card                                body: pan 411111******1111, cvv ***
-HTTP OUT <-- 200 PUT https://.../card (420 ms)                                response body
+HTTP OUT <-- 200 PUT https://.../card (420 ms)                                request: pan 411111******1111, cvv ***
 NI pay with card -> AWAIT_3DS (421 ms)
-HTTP OUT --> POST https://.../3ds2/authentications                            browserInfo
-HTTP OUT <-- 200 POST https://.../3ds2/authentications (380 ms)
+HTTP OUT <-- 200 POST https://.../3ds2/authentications (380 ms)               request: browserInfo
 NI 3DS authentication -> AWAIT_3DS (381 ms)
 3DS challenge required: transStatus C, ACS https://acs...
 Payment finished: CHALLENGE_REQUIRED (N-Genius state AWAIT_3DS)
-HTTP IN  <-- 200 POST /api/v1/payments (1320 ms)                           request body (masked) + response body
+HTTP IN  <-- 200 POST /api/v1/payments (1320 ms)                           client ip, request headers + body, response
 ```
+
+The start of each exchange (`HTTP IN  -->`, `HTTP OUT -->`) is logged at `DEBUG` only, e.g. to see a request that
+hangs: `LOGGING_LEVEL_COM_COMPANY_PAYMENT_COMMON_LOGGING=DEBUG`.
 
 | Line | Logged by | Structured fields |
 |---|---|---|
@@ -399,7 +401,7 @@ Levels:
 (The exact envelope fields are Spring Boot's ECS formatter; the field values above are illustrative.)
 
 **Other formats** need no code change: `LOG_FORMAT=logstash` (Logstash JSON) or `LOG_FORMAT=gelf` (Graylog).
-**Human-readable console** for local debugging: the `plainlogs` profile.
+**Human-readable console:** the sandbox default (messages only); the `plainlogs` profile adds every field.
 
 ### PCI DSS: what is never logged
 
@@ -445,7 +447,8 @@ How OpenTelemetry and Grafana fit together (signals, the path of a log line, col
 
 | Destination | Environments | Format |
 |---|---|---|
-| stdout | all | ECS JSON (`LOG_FORMAT`), or plain text with the `plainlogs` profile |
+| stdout | production | ECS JSON (`LOG_FORMAT`), for a log shipper |
+| stdout | sandbox | one short readable line per event: `time level [correlationId] [paymentId] logger : message`, no fields or bodies (`LOG_CONSOLE_FORMAT=ecs` for the full JSON; profile `plainlogs` for readable lines plus every field) |
 | Rolling file `logs/ni-payment-integration.log` (`LOG_FILE`) | all | same JSON as stdout (also with `plainlogs`) |
 | Grafana, over OTLP | **sandbox only** (production has no Grafana yet) | OTLP log records |
 
@@ -492,6 +495,7 @@ and `NiClient.call` (every N-Genius request).
 | `app.security.api-keys` | `API_KEYS` | `client1:key1,client2:key2` (key ≥ 8 chars) |
 | `app.security.return-urls` | `RETURN_URLS` | allowed `returnUrl` prefixes per client: `client1:https://shop.example.com/checkout/,client2:...` (empty = none; sandbox: `local-client:http://localhost:3000/`) |
 | `logging.structured.format.console`, `.file` | `LOG_FORMAT` | `ecs` (default), `logstash`, `gelf` |
+| `logging.structured.format.console` (sandbox) | `LOG_CONSOLE_FORMAT` | empty (default) = readable one-liners; `ecs` = full JSON |
 | `logging.file.name` | `LOG_FILE` | `logs/ni-payment-integration.log` (all environments) |
 | `logging.logback.rollingpolicy.*` | `LOG_FILE_MAX_SIZE`, `LOG_FILE_MAX_HISTORY`, `LOG_FILE_TOTAL_SIZE_CAP` | `50MB`, `14` days, `2GB` |
 | `management.opentelemetry.logging.export.otlp.endpoint` | `GRAFANA_OTLP_LOGS_ENDPOINT` | sandbox only: `http://localhost:4318/v1/logs`; prod: not set = no export |

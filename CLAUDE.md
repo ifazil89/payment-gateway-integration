@@ -14,7 +14,7 @@ mvn test -Dtest=PaymentApiTest#cardIsAuthorised   # one test method
 
 # run (default profile = sandbox: N-Genius sandbox + in-memory H2), port 8085
 NI_API_KEY=... NI_OUTLET_ID=... mvn spring-boot:run
-mvn spring-boot:run -Dspring-boot.run.profiles=sandbox,plainlogs   # human-readable logs instead of ECS JSON
+mvn spring-boot:run -Dspring-boot.run.profiles=sandbox,plainlogs   # readable console lines plus every field (sandbox alone: messages only)
 ```
 
 Swagger UI: `http://localhost:8085/swagger-ui.html` (API key `sandbox-key`). Example requests: `api-examples.http`.
@@ -65,7 +65,7 @@ The `notificationURL` sent to N-Genius is the payment's `returnUrl` (the client'
 ### Logging, tracing, PCI
 - ECS JSON to stdout by default (`LOG_FORMAT=logstash|gelf` alternatives), and the same JSON to a rolling file in every environment (`logging.file.name`, `logging.logback.rollingpolicy.*`; Boot's programmatic Logback setup, no `logback-spring.xml`).
 - Grafana over OTLP in the sandbox only: `GrafanaLogExportConfig` attaches the OpenTelemetry Logback appender to the root logger when `management.opentelemetry.logging.export.otlp.endpoint` is set (`application-sandbox.yml`; prod has none). `opentelemetry-logback-appender-1.0` must stay on the instrumentation release built on Boot's `opentelemetry.version`. `PaymentApiTest` switches the export off. MDC carries `traceId`, `spanId`, `correlationId`, `clientId`, `paymentId` (`LogFields`). Business log lines use SLF4J fluent `log.atInfo()...addKeyValue(...)` with dotted field names (`payment.*`, `ni.*`, `http.*`) — follow that style.
-- `HttpLoggingFilter` (inbound) and `RestClientLoggingInterceptor` (outbound) log masked headers/bodies. `SensitiveDataMasker` masks PAN (first 6 + last 4), CVV, tokens, auth headers. It works at any depth (nested objects, arrays, JSON inside a string value) and masks a secret field's object/array value as a whole. Any new secret field must be added to `SensitiveDataMasker.SECRET_FIELDS` (lower case).
+- `HttpLoggingFilter` (inbound) and `RestClientLoggingInterceptor` (outbound) log masked headers/bodies as ONE INFO line per exchange (`<--`, request + response); the `-->` start line is DEBUG. The sandbox console shows only `time level [correlationId] [paymentId] logger : message` (`LOG_CONSOLE_FORMAT=ecs` for JSON); file and Grafana keep every field. `PaymentApiTest` forces JSON on the console so its log checks see bodies. `SensitiveDataMasker` masks PAN (first 6 + last 4), CVV, tokens, auth headers. It works at any depth (nested objects, arrays, JSON inside a string value) and masks a secret field's object/array value as a whole. Any new secret field must be added to `SensitiveDataMasker.SECRET_FIELDS` (lower case).
 - `PaymentApiTest.requestAndResponseAreLoggedWithoutCardData` fails the build if card data or API keys reach the log.
 
 ## Tests

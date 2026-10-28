@@ -15,11 +15,19 @@ spring:
     username: sa
     password:
 
+# Console: one short readable line per event (no fields, no bodies), to follow a payment step by step.
+# Every field and the masked bodies are still in the rolling file (JSON) and in Grafana.
+#   LOG_CONSOLE_FORMAT=ecs        the full JSON on the console as well
+#   profile plainlogs             readable lines plus every field (bodies too)
 logging:
   structured:
+    format:
+      console: ${LOG_CONSOLE_FORMAT:}
     ecs:
       service:
         environment: sandbox
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %5p [%X{correlationId:-}] [%X{paymentId:-}] %-30.30logger{29} : %m%n"
 
 # Logs to Grafana over OTLP/HTTP (sandbox only; production has no Grafana yet). Any OTLP receiver works:
 #   Loki 3 (http://<loki>:3100/otlp/v1/logs), Alloy / OpenTelemetry collector (http://<host>:4318/v1/logs),

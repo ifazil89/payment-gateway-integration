@@ -11,11 +11,12 @@ import org.springframework.http.client.ClientHttpResponse;
 import java.io.IOException;
 
 /**
- * Logs every call going OUT through a RestClient (used for N-Genius), with masked headers and bodies:
+ * Logs every call going OUT through a RestClient (used for N-Genius), with masked headers and bodies,
+ * as ONE line per call:
  *
- *   HTTP OUT --> PUT https://api-gateway.sandbox.ngenius-payments.com/.../card      (headers, body)
- *   HTTP OUT <-- 200 PUT https://.../card (420 ms)                                    (headers, body)
- *   HTTP OUT <-- FAILED PUT https://.../card after 30001 ms: Read timed out           (timeout / no answer)
+ *   HTTP OUT <-- 200 PUT https://.../card (420 ms)                                    (request + response headers and bodies)
+ *   HTTP OUT <-- FAILED PUT https://.../card after 30001 ms: Read timed out           (timeout / no answer; request too)
+ *   HTTP OUT --> PUT https://api-gateway.sandbox.ngenius-payments.com/.../card      DEBUG only: the start
  *
  * The outgoing headers include "traceparent": N-Genius (and any service behind it) can be found
  * in the same trace. The response body is buffered so it can be logged and still be read by Spring.
@@ -32,15 +33,15 @@ public class RestClientLoggingInterceptor implements ClientHttpRequestIntercepto
         String method = request.getMethod().name();
         String url = request.getURI().toString();
         long start = System.nanoTime();
+        String requestHeaders = masker.headers(request.getHeaders());
+        String requestBody = masker.body(body, contentType(request.getHeaders()));
 
-        log.atInfo()
+        log.atDebug()
                 .setMessage("HTTP OUT --> {} {}")
                 .addArgument(method).addArgument(url)
                 .addKeyValue("http.direction", "outbound")
                 .addKeyValue("http.method", method)
                 .addKeyValue("http.url", url)
-                .addKeyValue("http.request.headers", masker.headers(request.getHeaders()))
-                .addKeyValue("http.request.body", masker.body(body, contentType(request.getHeaders())))
                 .log();
 
         ClientHttpResponse response;
@@ -55,6 +56,8 @@ public class RestClientLoggingInterceptor implements ClientHttpRequestIntercepto
                     .addKeyValue("http.method", method)
                     .addKeyValue("http.url", url)
                     .addKeyValue("http.duration_ms", durationMs)
+                    .addKeyValue("http.request.headers", requestHeaders)
+                    .addKeyValue("http.request.body", requestBody)
                     .addKeyValue("error.type", ex.getClass().getSimpleName())
                     .addKeyValue("error.message", ex.getMessage())
                     .log();
@@ -72,6 +75,8 @@ public class RestClientLoggingInterceptor implements ClientHttpRequestIntercepto
                 .addKeyValue("http.url", url)
                 .addKeyValue("http.status_code", status)
                 .addKeyValue("http.duration_ms", durationMs)
+                .addKeyValue("http.request.headers", requestHeaders)
+                .addKeyValue("http.request.body", requestBody)
                 .addKeyValue("http.response.headers", masker.headers(buffered.getHeaders()))
                 .addKeyValue("http.response.body", masker.body(buffered.bodyBytes(), contentType(buffered.getHeaders())))
                 .log();

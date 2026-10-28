@@ -17,14 +17,14 @@ import java.io.IOException;
 import java.util.Collections;
 
 /**
- * Logs every API call coming IN, with masked headers and bodies:
+ * Logs every API call coming IN, with masked headers and bodies, as ONE line when it is answered:
  *
- *   HTTP IN  --> POST /api/v1/payments                     (headers, client ip)
- *   HTTP IN  <-- 200 POST /api/v1/payments (412 ms)        (request body, response body, response headers)
+ *   HTTP IN  <-- 200 POST /api/v1/payments (412 ms)        (client ip, request headers + body, response headers + body)
+ *   HTTP IN  --> POST /api/v1/payments                     DEBUG only: the start, e.g. to see a request that hangs
  *
- * Both lines carry traceId, spanId, correlationId (MDC) and structured fields (http.*), so an
+ * The line carries traceId, spanId, correlationId (MDC) and structured fields (http.*), so an
  * observability tool can filter on http.status_code, http.duration_ms, etc.
- * The request body is logged on the second line because it is only known after the controller read it.
+ * Everything is on the answer line because the request body is only known after the controller read it.
  */
 @Slf4j
 @RequiredArgsConstructor
@@ -45,14 +45,12 @@ public class HttpLoggingFilter extends OncePerRequestFilter {
         String path = request.getRequestURI() + (request.getQueryString() == null ? "" : "?" + request.getQueryString());
         long start = System.nanoTime();
 
-        log.atInfo()
+        log.atDebug()
                 .setMessage("HTTP IN  --> {} {}")
                 .addArgument(request.getMethod()).addArgument(path)
                 .addKeyValue("http.direction", "inbound")
                 .addKeyValue("http.method", request.getMethod())
                 .addKeyValue("http.path", path)
-                .addKeyValue("http.client_ip", request.getRemoteAddr())
-                .addKeyValue("http.request.headers", requestHeaders(request))
                 .log();
         try {
             chain.doFilter(request, response);
@@ -67,6 +65,8 @@ public class HttpLoggingFilter extends OncePerRequestFilter {
                     .addKeyValue("http.path", path)
                     .addKeyValue("http.status_code", status)
                     .addKeyValue("http.duration_ms", durationMs)
+                    .addKeyValue("http.client_ip", request.getRemoteAddr())
+                    .addKeyValue("http.request.headers", requestHeaders(request))
                     .addKeyValue("http.request.body", masker.body(request.getContentAsByteArray(), request.getContentType()))
                     .addKeyValue("http.response.headers", responseHeaders(response))
                     .addKeyValue("http.response.body", masker.body(response.getContentAsByteArray(), response.getContentType()))

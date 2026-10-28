@@ -52,7 +52,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest(properties = {"ni.api-key=test", "ni.outlet-id=outlet-1",
         "app.security.api-keys=local-client:sandbox-key,other-client:other-client-key",
-        "management.logging.export.otlp.enabled=false", "logging.file.name=target/logs/test.log"})
+        "management.logging.export.otlp.enabled=false", "logging.file.name=target/logs/test.log",
+        // full JSON on the console (as in the file / Grafana), so the log checks below see bodies and headers
+        "logging.structured.format.console=ecs"})
 @AutoConfigureMockMvc
 @ExtendWith(OutputCaptureExtension.class)
 class PaymentApiTest {
@@ -497,7 +499,7 @@ class PaymentApiTest {
                 .andExpect(status().isOk());
 
         assertThat(output.getOut())
-                .contains("HTTP IN  --> POST /api/v1/payments")
+                .doesNotContain("HTTP IN  --> POST /api/v1/payments")    // the start line is DEBUG only
                 .contains("HTTP IN  <-- 200 POST /api/v1/payments")
                 .contains("log-test-13")                       // correlationId on the lines
                 .contains("411111******1111")                  // masked PAN in the logged body
