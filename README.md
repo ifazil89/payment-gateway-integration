@@ -440,6 +440,17 @@ exporter sends the records to `GRAFANA_OTLP_LOGS_ENDPOINT` (default `http://loca
   otherwise the exporter logs connection warnings). Tests switch it off.
 - For production later: set `management.opentelemetry.logging.export.otlp.endpoint` in `application-prod.yml`
   (or `MANAGEMENT_OPENTELEMETRY_LOGGING_EXPORT_OTLP_ENDPOINT`); no code change.
+- Traces go to Tempo the same way in the sandbox (`GRAFANA_OTLP_TRACES_ENDPOINT`, default
+  `http://localhost:4318/v1/traces`; `GRAFANA_TRACES_ENABLED=false` switches them off).
+
+**Grafana stack** (Alloy → Loki, Tempo, Prometheus + Grafana, log ↔ trace links provisioned), matching the
+sandbox defaults:
+
+```bash
+docker compose -f docker/grafana/docker-compose.yml up -d    # Grafana: http://localhost:3001 (admin / admin)
+```
+
+Details (ports, shared sandbox host, retention, versions): [docs/opentelemetry-grafana.md](docs/opentelemetry-grafana.md#the-grafana-stack-in-dockergrafana).
 
 **Metrics:** `/actuator/metrics` includes `http.server.requests`, `http.client.requests` (N-Genius calls) and `httpcomponents.httpclient.pool.*` (the N-Genius connection pool).
 
@@ -470,10 +481,12 @@ and `NiClient.call` (every N-Genius request).
 | `logging.logback.rollingpolicy.*` | `LOG_FILE_MAX_SIZE`, `LOG_FILE_MAX_HISTORY`, `LOG_FILE_TOTAL_SIZE_CAP` | `50MB`, `14` days, `2GB` |
 | `management.opentelemetry.logging.export.otlp.endpoint` | `GRAFANA_OTLP_LOGS_ENDPOINT` | sandbox only: `http://localhost:4318/v1/logs`; prod: not set = no export |
 | `management.logging.export.otlp.enabled` | `GRAFANA_LOGS_ENABLED` | sandbox: `true` |
+| `management.opentelemetry.tracing.export.otlp.endpoint` (sandbox) | `GRAFANA_OTLP_TRACES_ENDPOINT` | `http://localhost:4318/v1/traces` |
+| `management.tracing.export.otlp.enabled` | `GRAFANA_TRACES_ENABLED` | sandbox: `true` |
 | `app.logging.http.log-bodies` | `LOG_HTTP_BODIES` | `true` (default, masked) / `false` |
 | `logging.structured.ecs.service.environment` | `APP_ENVIRONMENT` | shown as `service.environment` |
 | `management.tracing.sampling.probability` | `TRACING_SAMPLING_PROBABILITY` | 1.0 (prod 0.1) |
-| `management.opentelemetry.tracing.export.otlp.endpoint` | `MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT` | not set = no export |
+| `management.opentelemetry.tracing.export.otlp.endpoint` | `MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT` | prod: not set = no export (sandbox: `GRAFANA_OTLP_TRACES_ENDPOINT`) |
 | `spring.datasource.*` | `DB_URL`, `DB_USERNAME`, `DB_PASSWORD` | prod profile |
 
 ---

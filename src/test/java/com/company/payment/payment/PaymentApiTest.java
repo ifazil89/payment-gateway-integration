@@ -49,7 +49,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest(properties = {"ni.api-key=test", "ni.outlet-id=outlet-1",
         "app.security.api-keys=local-client:sandbox-key,other-client:other-client-key",
-        "management.logging.export.otlp.enabled=false", "logging.file.name=target/logs/test.log"})
+        "management.logging.export.otlp.enabled=false", "management.tracing.export.otlp.enabled=false",
+        "logging.file.name=target/logs/test.log"})
 @AutoConfigureMockMvc
 @ExtendWith(OutputCaptureExtension.class)
 class PaymentApiTest {

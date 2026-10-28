@@ -1,0 +1,15 @@
+# Prometheus: metrics arrive over OTLP from Alloy (--web.enable-otlp-receiver), nothing is scraped.
+# The app sends metrics only with OTLP_METRICS_ENABLED=true.
+global:
+  evaluation_interval: 1m
+
+otlp:
+  # keep these resource attributes as labels (service_name, deployment_environment_name, ...)
+  promote_resource_attributes:
+    - service.name
+    - service.instance.id
+    - deployment.environment.name
+
+storage:
+  tsdb:
+    out_of_order_time_window: 30m
