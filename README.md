@@ -35,6 +35,7 @@ mvn spring-boot:run -Dspring-boot.run.profiles=sandbox,plainlogs
 | `http://localhost:8085/openapi/payment-api.yaml` | the contract file itself |
 | `http://localhost:8085/actuator/health` | health |
 
+- **Call sequence:** which N-Genius calls each API call makes, in order: [docs/api-flow.md](docs/api-flow.md).
 - **Try it:** use [`api-examples.http`](api-examples.http) in IntelliJ or VS Code (REST Client), or curl:
 
   ```bash
